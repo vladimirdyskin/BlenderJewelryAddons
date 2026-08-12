@@ -1,0 +1,17 @@
+schema_version = "1.0.0"
+id = "parametric_gems"
+version = "0.6.1"
+name = "Parametric Gems"
+tagline = "Create editable parametric gemstone meshes"
+maintainer = "Vladimir Dyskin"
+type = "add-on"
+tags = ["Modeling", "Mesh"]
+blender_version_min = "5.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[build]
+paths_exclude_pattern = [
+    "__pycache__/",
+    "*.pyc",
+    "tests/",
+]

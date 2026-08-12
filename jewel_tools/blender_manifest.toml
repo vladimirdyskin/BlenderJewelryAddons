@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+
+id = "jewel_tools"
+version = "1.0.0"
+name = "Jewel Tools"
+tagline = "Face layout, GN graph rebuild and hi-res viewport snapshot"
+maintainer = "Vladimir Dyskin"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+[permissions]
+files = "Save hi-res viewport snapshots to disk"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+]
