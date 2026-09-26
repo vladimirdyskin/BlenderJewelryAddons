@@ -1,8 +1,8 @@
-# Blender Jewelry Add-ons
+# Jewelry Suite
 
-Blender extensions for parametric jewelry modeling.
+One Blender extension for parametric jewelry modeling and technical presentation.
 
-## Extensions
+## Included Modules
 
 ### Parametric Gems
 
@@ -27,7 +27,7 @@ Requires Blender 5.1 or newer.
 
 ## Installation
 
-1. Download the required ZIP from the latest GitHub release.
+1. Download the `jewelry_suite` ZIP from the latest GitHub release.
 2. In Blender, open **Edit > Preferences > Extensions**.
 3. Open the menu in the top-right corner and choose **Install from Disk**.
 4. Select the downloaded ZIP and enable the extension.
@@ -36,25 +36,22 @@ Do not unpack the ZIP before installation.
 
 ## Development
 
-The repository contains three independent Blender extensions:
+The repository contains one extension package composed from separate source modules:
 
-- `parametric_gems`
-- `jewel_tools`
-- `pretty_ruler_overlay`
+- `jewelry_suite` - unified extension entry point
+- `parametric_gems` - gemstone source module
+- `jewel_tools` - modeling tools source modules
+- `pretty_ruler_overlay` - drafting overlay source module
 
-Build packages with Blender:
-
-```sh
-blender --command extension build --source-dir parametric_gems --output-dir dist
-blender --command extension build --source-dir jewel_tools --output-dir dist
-blender --command extension build --source-dir pretty_ruler_overlay --output-dir dist
-```
-
-Or build all three archives with Python 3.11 or newer:
+Build the archive with Python 3.11 or newer:
 
 ```sh
 python tools/package_extensions.py
 ```
+
+Use this repository builder instead of Blender's direct extension build command. The
+development package uses symbolic links to keep module sources synchronized, and the
+repository builder resolves those links into regular files inside the release ZIP.
 
 ## License
 

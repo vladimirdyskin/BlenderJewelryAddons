@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+id = "jewelry_suite"
+version = "0.2.0"
+name = "Jewelry Suite"
+tagline = "Parametric jewelry modeling and drafting tools"
+maintainer = "Vladimir Dyskin"
+type = "add-on"
+tags = ["Modeling", "Mesh", "3D View"]
+blender_version_min = "5.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Load gem templates and save hi-res viewport snapshots"
+
+[build]
+paths_exclude_pattern = [
+    "__pycache__/",
+    "*.pyc",
+]

@@ -23,7 +23,7 @@ class JewelSnapProps(bpy.types.PropertyGroup):
 class VIEW3D_PT_jewel_tools(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Jewel"
+    bl_category = "Jewelry"
     bl_label = "Jewel Tools"
 
     def draw(self, context):
@@ -61,6 +61,28 @@ class VIEW3D_PT_jewel_tools(bpy.types.Panel):
         box = L.box()
         box.label(text="Geometry Nodes", icon='NODETREE')
         box.operator("node.rebuild_instance_face", text="Rebuild Instance Face")
+
+        box = L.box()
+        box.label(text="Curve Preparation", icon='MOD_CURVE')
+        p = context.scene.jewel_subdivide_x
+        box.prop(p, "segment_length")
+        box.operator("object.add_subdivide_x_nodes", text="Add / Update Subdivide X", icon='GEOMETRY_NODES')
+
+        box = L.box()
+        box.label(text="Gem Optimization", icon='LINKED')
+        row = box.row(align=True)
+        operator = row.operator("object.link_identical_gems", text="Link Selected")
+        operator.scope = 'SELECTED'
+        operator = row.operator("object.link_identical_gems", text="Link All")
+        operator.scope = 'ALL'
+
+        box = L.box()
+        box.label(text="Prong Optimization", icon='LINKED')
+        row = box.row(align=True)
+        operator = row.operator("object.link_identical_prongs", text="Link Selected")
+        operator.scope = 'SELECTED'
+        operator = row.operator("object.link_identical_prongs", text="Link All")
+        operator.scope = 'ALL'
 
 
 def register():

@@ -406,7 +406,7 @@ class VIEW3D_PT_pretty_ruler(bpy.types.Panel):
     bl_label = "Pretty Ruler"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "View"
+    bl_category = "Jewelry"
 
     def draw(self, context):
         layout = self.layout

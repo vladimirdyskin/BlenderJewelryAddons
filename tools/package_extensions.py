@@ -7,7 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-EXTENSIONS = ("parametric_gems", "jewel_tools", "pretty_ruler_overlay")
+EXTENSIONS = ("jewelry_suite",)
 EXCLUDED_PARTS = {"__pycache__", "tests"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
@@ -27,7 +27,7 @@ def package(extension_name: str) -> Path:
                 continue
             if path.suffix in EXCLUDED_SUFFIXES or path.name == ".DS_Store":
                 continue
-            archive.write(path, relative.as_posix())
+            archive.writestr(relative.as_posix(), path.read_bytes())
 
     return output
 
