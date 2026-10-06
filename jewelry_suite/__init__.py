@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import face_tools, gems, gn_instance_face, gn_subdivide_x, hires_snapshot, link_gems, pretty_ruler, surface_pave, ui_panel
+from . import design_report_png, face_tools, gems, gn_instance_face, gn_subdivide_x, hires_snapshot, link_gems, pretty_ruler, surface_pave, ui_panel
 
 
 _MODULES = (
@@ -15,6 +15,7 @@ _MODULES = (
     surface_pave,
     ui_panel,
     pretty_ruler,
+    design_report_png,
 )
 
 _registered_modules: list[object] = []

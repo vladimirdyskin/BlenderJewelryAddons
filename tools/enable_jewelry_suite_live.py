@@ -14,6 +14,7 @@ SUITE_SUBMODULES = (
     "hires_snapshot",
     "link_gems",
     "gn_subdivide_x",
+    "design_report_png",
     "pave_layout",
     "pave_live",
     "surface_pave",

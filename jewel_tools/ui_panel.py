@@ -84,6 +84,11 @@ class VIEW3D_PT_jewel_tools(bpy.types.Panel):
         operator = row.operator("object.link_identical_prongs", text="Link All")
         operator.scope = 'ALL'
 
+        box = L.box()
+        box.label(text="Design Report", icon='TEXT')
+        box.prop(context.scene, "jewel_report_dir", text="Folder")
+        box.operator("wm.jewel_design_report_png", text="Save Report (PNG)", icon='IMAGE_DATA')
+
 
 def register():
     bpy.utils.register_class(JewelSnapProps)
