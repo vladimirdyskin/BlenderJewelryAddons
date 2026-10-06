@@ -2,7 +2,7 @@
 bl_info = {
     "name": "Pretty Ruler Overlay",
     "author": "Vladimir",
-    "version": (0, 8, 0),
+    "version": (0, 9, 0),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > View > Pretty Ruler",
     "description": "Styled dimension graphics over the native Measure tool",
@@ -11,11 +11,13 @@ bl_info = {
 
 import bpy
 import blf
+import bmesh
 import gpu
 import math
 from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
-from mathutils import Vector
+from mathutils import Vector, geometry, interpolate
+from mathutils.bvhtree import BVHTree
 
 _handle = None
 _shaders = {}
@@ -108,6 +110,131 @@ def _sync_timer():
     if props is not None and props.enabled:
         sync_items(props)
     return SYNC_INTERVAL
+
+
+# --- Живые размеры: концы привязаны к граням исходного меша ---------------------
+# Точка хранится как (объект, индекс грани, вершины грани, веса poly_3d_calc) и каждую
+# перерисовку собирается заново из текущих вершин. В Edit Mode читается живой BMesh,
+# поэтому размер меняется прямо во время G/S.
+
+def _ints(s):
+    return [int(x) for x in s.split(",")] if s else []
+
+
+def _floats(s):
+    return [float(x) for x in s.split(",")] if s else []
+
+
+def _face_world(obj, face, vids, cache):
+    """Мировые координаты вершин привязанной грани; None, если привязка потеряна."""
+    if obj is None or obj.type != 'MESH' or face < 0 or not vids:
+        return None
+    me = obj.data
+    if me.is_editmode:
+        bm = cache.get(me.as_pointer())
+        if bm is None:
+            bm = cache[me.as_pointer()] = bmesh.from_edit_mesh(me)
+            bm.verts.ensure_lookup_table()
+            bm.faces.ensure_lookup_table()
+        if face >= len(bm.faces) or max(vids) >= len(bm.verts):
+            return None
+        fv = bm.faces[face].verts
+        # после extrude/delete индексы съезжают — сверяем, что грань та же
+        if len(fv) != len(vids) or not all(bm.verts[i] == v for i, v in zip(vids, fv)):
+            return None
+        local = [bm.verts[i].co for i in vids]
+    else:
+        if face >= len(me.polygons) or list(me.polygons[face].vertices) != vids:
+            return None
+        local = [me.vertices[i].co for i in vids]
+    mw = obj.matrix_world
+    return [mw @ co for co in local]
+
+
+def _on_face(pts, weights):
+    return sum((p * w for p, w in zip(pts, weights)), Vector())
+
+
+def link_points(link, cache):
+    """Текущие мировые концы живого размера [A, B]; None, если привязка потеряна."""
+    fa = _face_world(link.obj_a, link.face_a, _ints(link.verts_a), cache)
+    fb = _face_world(link.obj_b, link.face_b, _ints(link.verts_b), cache)
+    if fa is None or fb is None:
+        return None
+    a = _on_face(fa, _floats(link.weights_a))
+    if link.kind == 'THICK':
+        # толщина: от A по нормали грани A до плоскости грани B
+        na = geometry.normal(fa)
+        nb = geometry.normal(fb)
+        denom = na.dot(nb)
+        if abs(denom) > 0.1:
+            return [a, a + na * ((fb[0] - a).dot(nb) / denom)]
+        return [a, a - nb * (a - fb[0]).dot(nb)]
+    return [a, _on_face(fb, _floats(link.weights_b))]
+
+
+def _base_mesh(obj):
+    """Вершины и грани исходного меша (в Edit Mode — из BMesh, индексы как у меша после выхода)."""
+    me = obj.data
+    if me.is_editmode:
+        bm = bmesh.from_edit_mesh(me)
+        bm.verts.index_update()
+        return [v.co.copy() for v in bm.verts], [[v.index for v in f.verts] for f in bm.faces]
+    return [v.co.copy() for v in me.vertices], [list(p.vertices) for p in me.polygons]
+
+
+def _bind_point(p, objects):
+    """Ближайшая к мировой точке p грань: (obj, face, vids, weights) или None."""
+    best = None
+    for obj in objects:
+        verts, polys = _base_mesh(obj)
+        if not polys:
+            continue
+        mw = obj.matrix_world
+        loc, _, face, _ = BVHTree.FromPolygons(verts, polys).find_nearest(mw.inverted_safe() @ p)
+        if loc is None:
+            continue
+        dist = (mw @ loc - p).length
+        tol = 1e-4 * max(1.0, max(obj.dimensions))
+        if dist <= tol and (best is None or dist < best[0]):
+            best = (dist, obj, face, polys[face], [mw @ verts[i] for i in polys[face]])
+    if best is None:
+        return None
+    _, obj, face, vids, world = best
+    return obj, face, vids, interpolate.poly_3d_calc(world, p)
+
+
+def add_link(props, pa, pb, objects):
+    """Живой размер между мировыми точками pa и pb, если обе лежат на гранях объектов."""
+    a = _bind_point(pa, objects)
+    b = _bind_point(pb, objects)
+    if a is None or b is None:
+        return None
+    link = props.links.add()
+    link.obj_a, link.face_a = a[0], a[1]
+    link.verts_a = ",".join(map(str, a[2]))
+    link.weights_a = ",".join("{:.9g}".format(w) for w in a[3])
+    link.obj_b, link.face_b = b[0], b[1]
+    link.verts_b = ",".join(map(str, b[2]))
+    link.weights_b = ",".join("{:.9g}".format(w) for w in b[3])
+    # Shift-линейка: A внутри грани, отрезок идёт по её нормали -> толщина стенки
+    d = pb - pa
+    if d.length and min(a[3]) > 1e-4:
+        na = geometry.normal(_face_world(a[0], a[1], a[2], {}))
+        if abs(d.normalized().dot(na)) > 0.9995:
+            link.kind = 'THICK'
+    return link
+
+
+class _Recolor:
+    """props с подменённым цветом линий и текста — для живых размеров."""
+
+    def __init__(self, props, color):
+        self._props = props
+        self.line_color = self.text_color = color
+
+    def __getattr__(self, name):
+        return getattr(self._props, name)
 
 
 def _draw_lines(points, prim, color, width):
@@ -358,6 +485,15 @@ def draw_callback():
             _draw_distance(pts, props, region, rv3d)
         elif len(pts) == 3:
             _draw_angle(pts, props, region, rv3d)
+    if props.links:
+        linked_props = _Recolor(props, props.link_color)
+        cache = {}
+        for link in props.links:
+            if not link.enabled:
+                continue
+            pts = link_points(link, cache)
+            if pts is not None:
+                _draw_distance(pts, linked_props, region, rv3d)
     gpu.state.blend_set('NONE')
 
 
@@ -417,6 +553,20 @@ class PrettyRulerItem(bpy.types.PropertyGroup):
     key: bpy.props.StringProperty()
 
 
+class PrettyRulerLink(bpy.types.PropertyGroup):
+    enabled: bpy.props.BoolProperty(name="", default=True, update=redraw_all)
+    kind: bpy.props.EnumProperty(
+        items=[('DIST', "Distance", ""), ('THICK', "Thickness", "")], default='DIST')
+    obj_a: bpy.props.PointerProperty(type=bpy.types.Object)
+    face_a: bpy.props.IntProperty(default=-1)
+    verts_a: bpy.props.StringProperty()
+    weights_a: bpy.props.StringProperty()
+    obj_b: bpy.props.PointerProperty(type=bpy.types.Object)
+    face_b: bpy.props.IntProperty(default=-1)
+    verts_b: bpy.props.StringProperty()
+    weights_b: bpy.props.StringProperty()
+
+
 class PRETTYRULER_OT_refresh(bpy.types.Operator):
     bl_idname = "pretty_ruler.refresh"
     bl_label = "Refresh List"
@@ -428,6 +578,57 @@ class PRETTYRULER_OT_refresh(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PRETTYRULER_OT_link(bpy.types.Operator):
+    bl_idname = "pretty_ruler.link"
+    bl_label = "Link to Geometry"
+    bl_description = ("Glue rulers that lie on mesh faces to those faces: the dimensions "
+                      "follow mesh edits. A Shift ruler becomes a wall thickness")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.pretty_ruler
+        objects = [o for o in context.visible_objects if o.type == 'MESH']
+        strokes = get_ruler_strokes()
+        linked = [pts for pts in strokes if len(pts) == 2 and add_link(props, pts[0], pts[1], objects)]
+        if not linked:
+            self.report({'WARNING'}, "No ruler lies on mesh faces")
+            return {'CANCELLED'}
+        if len(linked) == len(strokes):
+            # все линейки стали живыми — убираем родные; инструмент Measure сначала
+            # выключаем, иначе он запишет свои линейки обратно
+            _switch_tool("builtin.select_box")
+            for ann in bpy.data.annotations:
+                for layer in ann.layers:
+                    if getattr(layer, "is_ruler", False) and layer.active_frame:
+                        layer.frames.remove(layer.active_frame)
+        else:
+            # strokes по одной удалить нельзя — просто не рисуем привязанные
+            sync_items(props)
+            keys = {_stroke_key(pts) for pts in linked}
+            for it in props.items:
+                if it.key in keys:
+                    it.enabled = False
+        props.enabled = True
+        sync_items(props)
+        self.report({'INFO'}, "Linked %d of %d rulers" % (len(linked), len(strokes)))
+        redraw_all(self, context)
+        return {'FINISHED'}
+
+
+class PRETTYRULER_OT_link_remove(bpy.types.Operator):
+    bl_idname = "pretty_ruler.link_remove"
+    bl_label = "Remove Linked Dimension"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.pretty_ruler
+        if 0 <= props.active_link < len(props.links):
+            props.links.remove(props.active_link)
+            props.active_link = min(props.active_link, len(props.links) - 1)
+        redraw_all(self, context)
+        return {'FINISHED'}
+
+
 class PRETTYRULER_UL_items(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
@@ -435,10 +636,24 @@ class PRETTYRULER_UL_items(bpy.types.UIList):
         row.label(text=item.name)
 
 
+class PRETTYRULER_UL_links(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "enabled", text="")
+        pts = link_points(item, {})
+        if pts is None:
+            row.label(text="Lost", icon='ERROR')
+        else:
+            row.label(text=_label(pts, data),
+                      icon='MOD_SOLIDIFY' if item.kind == 'THICK' else 'DRIVER_DISTANCE')
+
+
 class PrettyRulerProps(bpy.types.PropertyGroup):
     enabled: bpy.props.BoolProperty(name="Enabled", default=False, update=update_enabled)
     items: bpy.props.CollectionProperty(type=PrettyRulerItem)
     active_index: bpy.props.IntProperty(default=0)
+    links: bpy.props.CollectionProperty(type=PrettyRulerLink)
+    active_link: bpy.props.IntProperty(default=0)
     endcap_style: bpy.props.EnumProperty(
         name="End Cap",
         items=[('TICK', "Tick", ""), ('ARROW', "Arrow", ""), ('NONE', "None", "")],
@@ -458,6 +673,7 @@ class PrettyRulerProps(bpy.types.PropertyGroup):
     arc_radius: bpy.props.FloatProperty(name="Arc Radius", default=40.0, min=10, max=200, update=redraw_all)
     line_color: bpy.props.FloatVectorProperty(name="Line", subtype='COLOR', size=3, default=(1, 1, 1), min=0, max=1, update=redraw_all)
     text_color: bpy.props.FloatVectorProperty(name="Text", subtype='COLOR', size=3, default=(1, 1, 1), min=0, max=1, update=redraw_all)
+    link_color: bpy.props.FloatVectorProperty(name="Linked", subtype='COLOR', size=3, default=(1.0, 0.6, 0.1), min=0, max=1, update=redraw_all)
     text_bg: bpy.props.BoolProperty(name="Text Background", default=True, update=redraw_all)
     bg_color: bpy.props.FloatVectorProperty(name="BG", subtype='COLOR', size=3, default=(0, 0, 0), min=0, max=1, update=redraw_all)
     bg_alpha: bpy.props.FloatProperty(name="BG Alpha", default=0.6, min=0, max=1, update=redraw_all)
@@ -480,6 +696,11 @@ class VIEW3D_PT_pretty_ruler(bpy.types.Panel):
         box.operator("pretty_ruler.refresh", icon='FILE_REFRESH')
         if len(p.items):
             box.template_list("PRETTYRULER_UL_items", "", p, "items", p, "active_index", rows=4)
+        box.operator("pretty_ruler.link", icon='LINKED')
+        if len(p.links):
+            row = box.row()
+            row.template_list("PRETTYRULER_UL_links", "", p, "links", p, "active_link", rows=3)
+            row.column(align=True).operator("pretty_ruler.link_remove", icon='X', text="")
 
         col = layout.column()
         col.enabled = p.enabled
@@ -513,6 +734,7 @@ class VIEW3D_PT_pretty_ruler(bpy.types.Panel):
         col.label(text="Colors:")
         col.prop(p, "line_color")
         col.prop(p, "text_color")
+        col.prop(p, "link_color")
         col.prop(p, "text_bg")
         s2 = col.column()
         s2.enabled = p.text_bg
@@ -522,7 +744,8 @@ class VIEW3D_PT_pretty_ruler(bpy.types.Panel):
         col.prop(p, "hide_native")
 
 
-classes = (PrettyRulerItem, PrettyRulerProps, PRETTYRULER_OT_refresh, PRETTYRULER_UL_items, VIEW3D_PT_pretty_ruler)
+classes = (PrettyRulerItem, PrettyRulerLink, PrettyRulerProps, PRETTYRULER_OT_refresh, PRETTYRULER_OT_link,
+           PRETTYRULER_OT_link_remove, PRETTYRULER_UL_items, PRETTYRULER_UL_links, VIEW3D_PT_pretty_ruler)
 
 
 def register():
