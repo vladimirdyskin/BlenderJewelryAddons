@@ -5,8 +5,6 @@
 #   brew install gh && gh auth login && gh auth setup-git
 #   git clone https://github.com/vladimirdyskin/BlenderJewelryAddons.git ~/GitHub/BlenderJewelryAddons
 #   ~/GitHub/BlenderJewelryAddons/tools/setup_mac.sh
-# Не клонировать в ~/Documents, ~/Desktop, ~/Downloads: macOS не пускает туда фоновые
-# задачи, и автосинхронизация работать не будет (скрипт её тогда не ставит).
 #
 # Что делает (повторный запуск безопасен):
 #   1. Клонирует BlenderIJewel рядом с этим репозиторием, если его нет
@@ -17,9 +15,10 @@
 #      Настоящие папки не трогает; старый симлинк заменяет; файл (алиас Finder) убирает в .bak.
 #   3. Включает аддоны в Blender (из командной строки) и сохраняет настройки.
 #      Blender в этот момент лучше закрыть, иначе при выходе он перезапишет настройки своими.
-#   4. Ставит launchd-задачу: sync.sh каждые 15 минут, лог в ~/Library/Logs/blender-addons-sync.log.
 #
-# Опции: --no-enable (без шага 3), --no-launchd (без шага 4).
+# Обновление — вручную: tools/sync.sh <BlenderJewelryAddons> <BlenderIJewel>
+#
+# Опции: --no-enable (без шага 3).
 # Переменные: IJEWEL_DIR — путь к клону BlenderIJewel, BLENDER — путь к Blender.app/Contents/MacOS/Blender.
 
 set -euo pipefail
@@ -28,14 +27,11 @@ SUITE_DIR=$(cd "$(dirname "$0")/.." && pwd)
 IJEWEL_DIR=${IJEWEL_DIR:-$(dirname "$SUITE_DIR")/BlenderIJewel}
 IJEWEL_URL=https://github.com/vladimirdyskin/BlenderIJewel.git
 BLENDER_CONFIG="$HOME/Library/Application Support/Blender"
-LABEL=com.vladimirdyskin.blender-addons-sync
 
 DO_ENABLE=1
-DO_LAUNCHD=1
 for arg in "$@"; do
     case "$arg" in
         --no-enable) DO_ENABLE=0 ;;
-        --no-launchd) DO_LAUNCHD=0 ;;
         *) echo "Unknown option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -113,42 +109,4 @@ bpy.ops.wm.save_userpref()
     fi
 fi
 
-# --- 4. авто-синхронизация ---
-protected() {
-    case "$1/" in "$HOME/Documents/"*|"$HOME/Desktop/"*|"$HOME/Downloads/"*) return 0 ;; esac
-    return 1
-}
-if [ $DO_LAUNCHD -eq 1 ] && { protected "$SUITE_DIR" || protected "$IJEWEL_DIR"; }; then
-    echo "Auto-sync skipped: repositories inside ~/Documents, ~/Desktop or ~/Downloads are not" >&2
-    echo "accessible to background jobs on macOS. Clone into ~/GitHub, or run tools/sync.sh by hand." >&2
-    DO_LAUNCHD=0
-fi
-if [ $DO_LAUNCHD -eq 1 ]; then
-    plist="$HOME/Library/LaunchAgents/$LABEL.plist"
-    mkdir -p "$(dirname "$plist")" "$HOME/Library/Logs"
-    cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>$LABEL</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>$SUITE_DIR/tools/sync.sh</string>
-        <string>$SUITE_DIR</string>
-        <string>$IJEWEL_DIR</string>
-    </array>
-    <key>StartInterval</key><integer>900</integer>
-    <key>RunAtLoad</key><true/>
-    <key>StandardOutPath</key><string>$HOME/Library/Logs/blender-addons-sync.log</string>
-    <key>StandardErrorPath</key><string>$HOME/Library/Logs/blender-addons-sync.log</string>
-</dict>
-</plist>
-PLIST
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$plist"
-    echo "Auto-sync every 15 min: $plist"
-fi
-
-echo "Done."
+echo "Done. Update later with: $SUITE_DIR/tools/sync.sh $SUITE_DIR $IJEWEL_DIR"
