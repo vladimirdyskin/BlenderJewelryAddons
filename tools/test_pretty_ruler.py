@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import sys
 
@@ -105,6 +106,29 @@ bmesh.update_edit_mesh(mesh)
 assert pr.link_points(thick, {}) is None
 bpy.ops.object.mode_set(mode='OBJECT')
 
+# --- Калибровка Empty-картинки -------------------------------------------------
+img = bpy.data.images.new("Ref", 64, 32)
+ref = bpy.data.objects.new("Ref", None)
+ref.empty_display_type = 'IMAGE'
+ref.data = img
+ref.rotation_euler = (math.pi / 2, 0.0, 0.0)  # лицом вперёд, картинка в плоскости y = 0.5
+ref.location = (0.0, 0.5, 0.0)
+bpy.context.collection.objects.link(ref)
+bpy.context.view_layer.update()
+assert pr.is_reference(ref) and not pr.is_reference(wall)
+
+# линейка на глубине курсора (y = 0) проецируется на плоскость картинки
+a = pr.to_image_plane(ref, Vector((-1.0, 0.0, 0.2)))
+b = pr.to_image_plane(ref, Vector((1.0, 0.0, 0.2)))
+assert (a - Vector((-1.0, 0.5, 0.2))).length < 1e-6 and (b - Vector((1.0, 0.5, 0.2))).length < 1e-6
+inv = ref.matrix_world.inverted()
+feature_a, feature_b = inv @ a, inv @ b  # детали фото в координатах картинки
+pr.calibrate(ref, a, b, 5.0)
+bpy.context.view_layer.update()
+assert ((ref.matrix_world @ feature_a) - a).length < 1e-6  # первая точка осталась на месте
+assert close(((ref.matrix_world @ feature_b) - a).length, 5.0)  # вторая — на реальном расстоянии
+assert all(close(v, 2.5) for v in ref.scale) and close(ref.rotation_euler.x, math.pi / 2)
+
 recolored = pr._Recolor(props, props.link_color)
 assert tuple(recolored.text_color) == tuple(props.link_color)
 assert recolored.font_size == props.font_size
@@ -113,4 +137,4 @@ jewelry_suite.unregister()
 assert pr._handle is None
 assert not bpy.app.timers.is_registered(pr._sync_timer)
 
-print("PRETTY_RULER_TEST", {"match_flags": "ok", "handler": "ok", "timer": "ok", "linked": "ok"})
+print("PRETTY_RULER_TEST", {"match_flags": "ok", "handler": "ok", "timer": "ok", "linked": "ok", "calibrate": "ok"})

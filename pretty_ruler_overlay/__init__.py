@@ -2,7 +2,7 @@
 bl_info = {
     "name": "Pretty Ruler Overlay",
     "author": "Vladimir",
-    "version": (0, 9, 0),
+    "version": (0, 10, 0),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > View > Pretty Ruler",
     "description": "Styled dimension graphics over the native Measure tool",
@@ -16,7 +16,7 @@ import gpu
 import math
 from gpu_extras.batch import batch_for_shader
 from bpy_extras import view3d_utils
-from mathutils import Vector, geometry, interpolate
+from mathutils import Matrix, Vector, geometry, interpolate
 from mathutils.bvhtree import BVHTree
 
 _handle = None
@@ -235,6 +235,46 @@ class _Recolor:
 
     def __getattr__(self, name):
         return getattr(self._props, name)
+
+
+# --- Калибровка Empty-картинки по линейке ---------------------------------------
+
+def is_reference(obj):
+    return obj is not None and obj.type == 'EMPTY' and obj.empty_display_type == 'IMAGE'
+
+
+def to_image_plane(obj, p, region=None, rv3d=None):
+    """Точка на плоскости картинки (локальная XY Empty), видимая там же, где p.
+    С видом — по лучу взгляда, без вида — ортогональной проекцией. None, если вид вдоль плоскости."""
+    mw = obj.matrix_world
+    co = mw.translation
+    no = (mw.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    if region is not None and rv3d is not None:
+        p2d = view3d_utils.location_3d_to_region_2d(region, rv3d, p)
+        if p2d is not None:
+            origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, p2d)
+            direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, p2d)
+            return geometry.intersect_line_plane(origin, origin + direction, co, no)
+    return p - no * (p - co).dot(no)
+
+
+def calibrate(obj, a, b, length):
+    """Равномерно масштабирует obj относительно a так, чтобы отрезок a-b стал length. Возвращает k."""
+    k = length / (b - a).length
+    obj.matrix_world = Matrix.Translation(a) @ Matrix.Scale(k, 4) @ Matrix.Translation(-a) @ obj.matrix_world
+    return k
+
+
+def _set_stroke(key, points):
+    """Переставляет точки родной линейки с данным ключом."""
+    for ann in bpy.data.annotations:
+        for layer in ann.layers:
+            af = layer.active_frame if getattr(layer, "is_ruler", False) else None
+            for st in (af.strokes if af else ()):
+                if _stroke_key([Vector(p.co) for p in st.points]) == key:
+                    for p, co in zip(st.points, points):
+                        p.co = co
+                    return
 
 
 def _draw_lines(points, prim, color, width):
@@ -488,8 +528,12 @@ def draw_callback():
     if props.links:
         linked_props = _Recolor(props, props.link_color)
         cache = {}
+        space = ctx.space_data
         for link in props.links:
             if not link.enabled:
+                continue
+            # размер скрытого объекта (или вне Local View) не рисуем
+            if not all(o is not None and o.visible_get(viewport=space) for o in (link.obj_a, link.obj_b)):
                 continue
             pts = link_points(link, cache)
             if pts is not None:
@@ -629,6 +673,56 @@ class PRETTYRULER_OT_link_remove(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class PRETTYRULER_OT_calibrate(bpy.types.Operator):
+    bl_idname = "pretty_ruler.calibrate"
+    bl_label = "Calibrate"
+    bl_description = ("Scale the active reference image about the ruler's first point "
+                      "so the ruler reads Real Length")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return is_reference(context.active_object)
+
+    def execute(self, context):
+        props = context.scene.pretty_ruler
+        sync_items(props)
+        strokes = {_stroke_key(pts): pts for pts in get_ruler_strokes()}
+        dists = [it for it in props.items if len(strokes.get(it.key, ())) == 2]
+        if len(dists) == 1:
+            item = dists[0]
+        elif 0 <= props.active_index < len(props.items):
+            item = props.items[props.active_index]
+        else:
+            item = None
+        pts = strokes.get(item.key) if item else None
+        if pts is None or len(pts) != 2:
+            self.report({'WARNING'}, "Select a distance ruler in the Measurements list")
+            return {'CANCELLED'}
+
+        obj = context.active_object
+        area = context.area
+        region = rv3d = None
+        if area is not None and area.type == 'VIEW_3D':
+            region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+            rv3d = area.spaces.active.region_3d
+        a = to_image_plane(obj, pts[0], region, rv3d)
+        b = to_image_plane(obj, pts[1], region, rv3d)
+        if a is None or b is None or (b - a).length < 1e-9:
+            self.report({'WARNING'}, "Look at the image face-on: the ruler does not land on it")
+            return {'CANCELLED'}
+
+        k = calibrate(obj, a, b, props.calib_length)
+        # линейка встаёт на картинку и показывает реальную длину; Measure сначала
+        # выключаем, иначе он перезапишет точки
+        _switch_tool("builtin.select_box")
+        _set_stroke(item.key, [a, a + (b - a) * k])
+        sync_items(props)
+        self.report({'INFO'}, "Scaled '%s' by %.4f" % (obj.name, k))
+        redraw_all(self, context)
+        return {'FINISHED'}
+
+
 class PRETTYRULER_UL_items(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
@@ -654,6 +748,7 @@ class PrettyRulerProps(bpy.types.PropertyGroup):
     active_index: bpy.props.IntProperty(default=0)
     links: bpy.props.CollectionProperty(type=PrettyRulerLink)
     active_link: bpy.props.IntProperty(default=0)
+    calib_length: bpy.props.FloatProperty(name="Real Length", default=10.0, min=0.0001, precision=3)
     endcap_style: bpy.props.EnumProperty(
         name="End Cap",
         items=[('TICK', "Tick", ""), ('ARROW', "Arrow", ""), ('NONE', "None", "")],
@@ -702,6 +797,17 @@ class VIEW3D_PT_pretty_ruler(bpy.types.Panel):
             row.template_list("PRETTYRULER_UL_links", "", p, "links", p, "active_link", rows=3)
             row.column(align=True).operator("pretty_ruler.link_remove", icon='X', text="")
 
+        box = layout.box()
+        box.label(text="Calibrate Reference:")
+        obj = context.active_object
+        if is_reference(obj):
+            box.label(text=obj.name, icon='IMAGE_REFERENCE')
+        else:
+            box.label(text="Select a reference image", icon='INFO')
+        row = box.row(align=True)
+        row.prop(p, "calib_length")
+        row.operator("pretty_ruler.calibrate")
+
         col = layout.column()
         col.enabled = p.enabled
         col.prop(p, "endcap_style")
@@ -745,7 +851,8 @@ class VIEW3D_PT_pretty_ruler(bpy.types.Panel):
 
 
 classes = (PrettyRulerItem, PrettyRulerLink, PrettyRulerProps, PRETTYRULER_OT_refresh, PRETTYRULER_OT_link,
-           PRETTYRULER_OT_link_remove, PRETTYRULER_UL_items, PRETTYRULER_UL_links, VIEW3D_PT_pretty_ruler)
+           PRETTYRULER_OT_link_remove, PRETTYRULER_OT_calibrate, PRETTYRULER_UL_items, PRETTYRULER_UL_links,
+           VIEW3D_PT_pretty_ruler)
 
 
 def register():
