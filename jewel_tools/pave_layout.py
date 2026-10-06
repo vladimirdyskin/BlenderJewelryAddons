@@ -3,7 +3,9 @@
 """Deterministic, surface-following packing in world millimetres."""
 
 from collections import defaultdict, deque
+from array import array
 from dataclasses import dataclass
+from hashlib import blake2b
 from math import ceil, cos, floor, pi, sin
 
 from mathutils import Vector
@@ -69,7 +71,7 @@ def _clip_triangle(points, weights, threshold):
 class Surface:
     """An evaluated surface, including the piecewise-linear mask boundary."""
 
-    def __init__(self, obj, depsgraph, threshold):
+    def __init__(self, obj, depsgraph, threshold, *, use_mask=True):
         group = obj.vertex_groups.get(MASK_NAME)
         if group is None:
             raise ValueError("Create a PaveMask with Paint Mask or Fill Surface first")
@@ -85,7 +87,7 @@ class Surface:
             normal_matrix = matrix.to_3x3().inverted().transposed()
             self.vertices = [matrix @ v.co for v in mesh.vertices]
             self.weights = [next((g.weight for g in v.groups if g.group == group.index), 0.0)
-                            for v in mesh.vertices]
+                            if use_mask else 1.0 for v in mesh.vertices]
             self.triangles = [tuple(t.vertices) for t in mesh.loop_triangles]
             self.normals = [tuple((normal_matrix @ mesh.corner_normals[i].vector).normalized()
                                   for i in t.loops) for t in mesh.loop_triangles]
@@ -134,6 +136,14 @@ class Surface:
             self.max_half_edge = max(self.max_half_edge, (b - a).length * 0.5)
         if self.boundary_tree:
             self.boundary_tree.balance()
+
+    def geometry_key(self):
+        """Exclude weights so painting cannot invalidate the fixed positions."""
+        digest = blake2b(digest_size=16)
+        digest.update(array('f', (c for v in self.vertices for c in v)).tobytes())
+        digest.update(array('I', (i for triangle in self.triangles for i in triangle)).tobytes())
+        digest.update(array('f', (c for triangle in self.normals for n in triangle for c in n)).tobytes())
+        return digest.hexdigest()
 
     def sample(self, point):
         position, face_normal, index, _distance = self.bvh.find_nearest(point)

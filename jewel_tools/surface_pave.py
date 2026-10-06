@@ -12,6 +12,7 @@ from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Matrix, Vector
 
 from .pave_layout import MASK_NAME, Surface, pack
+from . import pave_live
 
 
 ROLE = "jewelry_pave_role"
@@ -23,6 +24,11 @@ def _mesh_poll(_self, obj):
 
 
 class SurfacePaveSettings(PropertyGroup):
+    live_preview: BoolProperty(name="Live Pave", default=True,
+                               description="Reveal fixed gem positions as you paint or erase the mask")
+    show_mask: BoolProperty(name="Show Mask Color", default=False,
+                            description="Show the weight colors while painting gems",
+                            update=pave_live.update_overlay)
     gem: PointerProperty(name="Gem Source", type=bpy.types.Object, poll=_mesh_poll,
                          description="Optional round gem; leave empty to use the bundled round diamond")
     diameter: FloatProperty(name="Diameter (mm)", default=1.5, min=0.05, soft_max=10.0,
@@ -86,6 +92,7 @@ def _restore_paint(context, obj):
     settings = obj.jewel_pave
     if not settings.paint_state:
         return
+    pave_live.finish(context, obj)
     state = json.loads(settings.paint_state)
     for key, value in state["tools"].items():
         setattr(context.tool_settings, key, value)
@@ -99,6 +106,7 @@ def _restore_paint(context, obj):
     context.tool_settings.weight_paint.use_group_restrict = state["restrict"]
     if _owned(settings.output, obj, "OUTPUT"):
         settings.output.hide_set(state["output_hidden"])
+        settings.output.hide_select = state.get("output_hide_select", False)
     settings.paint_state = ""
 
 
@@ -179,6 +187,10 @@ def _instance_group(template):
     rotation.data_type = 'FLOAT_VECTOR'
     rotation.inputs['Name'].default_value = "pave_rotation"
     rotation.location = (-440, -310)
+    visible = nodes.new('GeometryNodeInputNamedAttribute')
+    visible.data_type = 'BOOLEAN'
+    visible.inputs['Name'].default_value = "pave_visible"
+    visible.location = (-200, 400)
     euler = nodes.new('FunctionNodeEulerToRotation')
     euler.location = (-200, -310)
     instances = nodes.new('GeometryNodeInstanceOnPoints')
@@ -186,6 +198,7 @@ def _instance_group(template):
     output = nodes.new('NodeGroupOutput')
     output.location = (320, 160)
     links.new(input_node.outputs['Geometry'], instances.inputs['Points'])
+    links.new(visible.outputs['Attribute'], instances.inputs['Selection'])
     links.new(source.outputs['Geometry'], instances.inputs['Instance'])
     links.new(rotation.outputs['Attribute'], euler.inputs['Euler'])
     links.new(euler.outputs['Rotation'], instances.inputs['Rotation'])
@@ -205,14 +218,14 @@ def _cleanup_output_data(mesh, group, template):
             bpy.data.meshes.remove(template_mesh)
 
 
-def rebuild(context, surface):
+def rebuild(context, surface, *, full_surface=False):
     """Calculate first; replace the generated result only after a successful build."""
     settings = surface.jewel_pave
     if settings.gem == surface:
         raise ValueError("The surface cannot also be the Gem Source")
     context.view_layer.update()
     depsgraph = context.evaluated_depsgraph_get()
-    sampled = Surface(surface, depsgraph, settings.threshold)
+    sampled = Surface(surface, depsgraph, settings.threshold, use_mask=not full_surface)
     mesh, envelope, metadata = _template_mesh(settings.gem, settings.diameter, depsgraph)
     template = points = group = None
     try:
@@ -229,11 +242,17 @@ def rebuild(context, surface):
         points.from_pydata([p.center for p in layout.placements], [], [])
         rotations = points.attributes.new("pave_rotation", 'FLOAT_VECTOR', 'POINT')
         normals = points.attributes.new("pave_normal", 'FLOAT_VECTOR', 'POINT')
+        surface_points = points.attributes.new("pave_surface_point", 'FLOAT_VECTOR', 'POINT')
+        visible = points.attributes.new("pave_visible", 'BOOLEAN', 'POINT')
+        identifiers = points.attributes.new("id", 'INT', 'POINT')
+        identifiers.data.foreach_set('value', list(range(len(layout.placements))))
         for index, placement in enumerate(layout.placements):
             frame = Matrix((placement.tangent, placement.normal.cross(placement.tangent),
                             placement.normal)).transposed()
             rotations.data[index].vector = frame.to_euler('XYZ')
             normals.data[index].vector = placement.normal
+            surface_points.data[index].vector = placement.surface_point
+            visible.data[index].value = not full_surface
         template = bpy.data.objects.new("Pave Source | " + surface.name, mesh)
         template[ROLE], template[OWNER] = "TEMPLATE", surface
         template["gem"] = metadata
@@ -269,7 +288,11 @@ def rebuild(context, surface):
     modifier = modifier or output.modifiers.new("Surface Pave", 'NODES')
     modifier.node_group = group
     output["pave_template"] = template
-    output["stone_count"] = len(layout.placements)
+    output["stone_count"] = 0 if full_surface else len(layout.placements)
+    output["candidate_count"] = len(layout.placements)
+    output["pave_layout_mode"] = "LIVE" if full_surface else "PACKED"
+    output["pave_geometry_key"] = sampled.geometry_key()
+    output["pave_live_error"] = ""
     output["minimum_center_distance_mm"] = layout.pitch
     output["limit_reached"] = layout.limited
     output.parent = surface
@@ -323,8 +346,16 @@ class OBJECT_OT_pave_mask(Operator):
                 if indices:
                     group.add(indices, 1.0 if self.action == 'FILL' else 0.0, 'REPLACE')
                 surface.data.update()
-                self.report({'INFO'}, "Mask updated; press Build / Rebuild Pave")
+                if surface.jewel_pave.live_preview:
+                    pave_live.prepare(context, surface)
+                    self.report({'INFO'}, "Mask and live gems updated")
+                else:
+                    self.report({'INFO'}, "Mask updated; press Build / Rebuild Pave")
                 return {'FINISHED'}
+            if surface.jewel_pave.live_preview:
+                preview = pave_live.prepare(context, surface)
+                if preview.get("limit_reached"):
+                    self.report({'WARNING'}, "Live layout reached the stone limit; raise it to cover the whole surface")
             if not surface.jewel_pave.paint_state:
                 tools = context.tool_settings
                 tool_keys = ("use_auto_normalize", "use_multipaint", "use_lock_relative")
@@ -339,6 +370,7 @@ class OBJECT_OT_pave_mask(Operator):
                     "unified": {key: getattr(unified, key) for key in ("use_unified_weight", "weight")},
                     "restrict": tools.weight_paint.use_group_restrict,
                     "output_hidden": surface.jewel_pave.output.hide_get() if surface.jewel_pave.output else False,
+                    "output_hide_select": surface.jewel_pave.output.hide_select if surface.jewel_pave.output else False,
                 })
                 for key in tool_keys:
                     setattr(tools, key, False)
@@ -348,7 +380,8 @@ class OBJECT_OT_pave_mask(Operator):
                     setattr(tools.weight_paint, key, False)
                 tools.weight_paint.use_group_restrict = False
             if _owned(surface.jewel_pave.output, surface, "OUTPUT"):
-                surface.jewel_pave.output.hide_set(True)
+                surface.jewel_pave.output.hide_set(not surface.jewel_pave.live_preview)
+                surface.jewel_pave.output.hide_select = True
             bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
             bpy.ops.brush.asset_activate(asset_library_type='ESSENTIALS',
                 relative_asset_identifier='brushes/essentials_brushes-mesh_weight.blend/Brush/Paint')
@@ -364,6 +397,8 @@ class OBJECT_OT_pave_mask(Operator):
             unified.weight = brush.weight
             if context.area and context.area.type == 'VIEW_3D':
                 bpy.ops.wm.tool_set_by_id(name="builtin.brush")
+            if surface.jewel_pave.live_preview:
+                pave_live.start(context, surface)
             return {'FINISHED'}
         except (ValueError, RuntimeError, AttributeError) as error:
             if 'surface' in locals():
@@ -402,6 +437,26 @@ class OBJECT_OT_pave_build(Operator):
         return {'FINISHED'}
 
 
+class OBJECT_OT_pave_refresh_live(Operator):
+    bl_idname = "object.pave_refresh_live"
+    bl_label = "Refresh Live Layout"
+    bl_description = "Recalculate fixed positions after changing the surface, source or layout settings"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        try:
+            surface = _target(context)
+            _activate(context, surface)
+            _finish_paint(context)
+            _mask(surface)
+            output = pave_live.prepare(context, surface, force=True)
+            self.report({'INFO'}, f"Prepared {output['candidate_count']} fixed positions")
+            return {'FINISHED'}
+        except (ValueError, RuntimeError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+
 class VIEW3D_PT_surface_pave(Panel):
     bl_idname = "VIEW3D_PT_surface_pave"
     bl_label = "Surface Pave"
@@ -418,8 +473,14 @@ class VIEW3D_PT_surface_pave(Panel):
             layout.label(text="Select a mesh and use it as the surface.")
             return
         settings = surface.jewel_pave
+        painting = surface.mode == 'WEIGHT_PAINT' and bool(settings.paint_state)
         mask = layout.box()
         mask.label(text="Painted Area", icon='WPAINT_HLT')
+        row = mask.row()
+        row.enabled = not painting
+        row.prop(settings, "live_preview")
+        if settings.live_preview:
+            mask.prop(settings, "show_mask")
         row = mask.row(align=True)
         row.operator("object.pave_mask", text="Paint", icon='BRUSH_DATA').action = 'PAINT'
         row.operator("object.pave_mask", text="Erase").action = 'ERASE'
@@ -428,41 +489,74 @@ class VIEW3D_PT_surface_pave(Panel):
         row.operator("object.pave_mask", text="Clear Mask").action = 'CLEAR'
         if surface.mode == 'WEIGHT_PAINT' or settings.paint_state:
             mask.operator("object.pave_mask", text="Finish Painting").action = 'DONE'
-        mask.prop(settings, "threshold")
-        mask.label(text="Paint on the visible side; red is included.")
+        row = mask.row()
+        row.enabled = not painting
+        row.prop(settings, "threshold")
+        if settings.live_preview:
+            mask.label(text="Paint to add gems; erase to remove them.")
+        else:
+            mask.label(text="Paint on the visible side; red is included.")
         if len(surface.data.vertices) < 100:
             mask.label(text="Coarse mesh: subdivide for a finer mask.", icon='INFO')
-        layout.prop(settings, "gem")
+        controls = layout.column()
+        controls.enabled = not painting
+        controls.prop(settings, "gem")
         if settings.gem is None:
-            layout.label(text="Source: bundled round diamond")
-        col = layout.column(align=True)
+            controls.label(text="Source: bundled round diamond")
+        col = controls.column(align=True)
         for name in ("diameter", "gap", "border", "offset", "angle"):
             col.prop(settings, name)
-        layout.prop(settings, "use_cursor")
-        layout.prop(settings, "max_stones")
-        layout.operator("object.pave_build", icon='GEOMETRY_NODES')
+        controls.prop(settings, "use_cursor")
+        controls.prop(settings, "max_stones")
+        if settings.live_preview:
+            controls.operator("object.pave_refresh_live", icon='FILE_REFRESH')
+        layout.operator("object.pave_build", text="Repack Painted Area", icon='GEOMETRY_NODES')
         if _owned(settings.output, surface, "OUTPUT"):
             output = settings.output
-            layout.label(text=f"Last build: {output.get('stone_count', 0)} gems")
+            if output.get('pave_layout_mode') == 'LIVE':
+                layout.label(text=f"Live: {output.get('stone_count', 0)} / {output.get('candidate_count', 0)} gems")
+            else:
+                layout.label(text=f"Last build: {output.get('stone_count', 0)} gems")
             if output.get('limit_reached'):
                 layout.label(text="Stone limit reached; increase it to fill more.", icon='ERROR')
-            layout.label(text="Rebuild after changing the mask or surface.")
+            if output.get('pave_live_error'):
+                layout.label(text=output['pave_live_error'], icon='ERROR')
+            elif not settings.live_preview:
+                layout.label(text="Rebuild after changing the mask or surface.")
         layout.label(text="1 Blender unit = 1 mm")
 
 
 _CLASSES = (SurfacePaveSettings, OBJECT_OT_pave_use_surface, OBJECT_OT_pave_mask,
-            OBJECT_OT_pave_build, VIEW3D_PT_surface_pave)
+            OBJECT_OT_pave_build, OBJECT_OT_pave_refresh_live, VIEW3D_PT_surface_pave)
 
 
 def register():
-    for cls in _CLASSES:
-        bpy.utils.register_class(cls)
-    bpy.types.Object.jewel_pave = PointerProperty(type=SurfacePaveSettings)
-    bpy.types.Scene.jewel_pave_surface = PointerProperty(type=bpy.types.Object, poll=_mesh_poll)
+    registered = []
+    object_property = False
+    scene_property = False
+    try:
+        for cls in _CLASSES:
+            bpy.utils.register_class(cls)
+            registered.append(cls)
+        bpy.types.Object.jewel_pave = PointerProperty(type=SurfacePaveSettings)
+        object_property = True
+        bpy.types.Scene.jewel_pave_surface = PointerProperty(type=bpy.types.Object, poll=_mesh_poll)
+        scene_property = True
+        pave_live.register()
+    except Exception:
+        pave_live.unregister()
+        if scene_property:
+            del bpy.types.Scene.jewel_pave_surface
+        if object_property:
+            del bpy.types.Object.jewel_pave
+        for cls in reversed(registered):
+            bpy.utils.unregister_class(cls)
+        raise
 
 
 def unregister():
     _finish_paint(bpy.context)
+    pave_live.unregister()
     del bpy.types.Scene.jewel_pave_surface
     del bpy.types.Object.jewel_pave
     for cls in reversed(_CLASSES):

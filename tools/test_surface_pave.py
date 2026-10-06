@@ -36,6 +36,7 @@ def grid(name, half=5.0, subdivisions=20, weight=None):
     obj.jewel_pave.diameter = 1.0
     obj.jewel_pave.gap = 0.1
     obj.jewel_pave.border = 0.1
+    obj.jewel_pave.live_preview = False
     return obj
 
 
