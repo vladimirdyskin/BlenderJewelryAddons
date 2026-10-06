@@ -103,15 +103,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Не догадывайся — документация и замер.
 - Работаем поэтапно вместе.
 
-# Сделанное в сценах (исходники локальные, в корне)
+# Сделанное в сценах
 
-- `gn_exact_spacing_patch.py` — патч группы `My_Gems_On_Curve`: тумблер Exact Spacing
+- `tools/gn_exact_spacing_patch.py` — патч группы `My_Gems_On_Curve`: тумблер Exact Spacing
   (точный зазор, ряд центрируется), длина камня вдоль кривой по bbox X исходника
   (багеты), исправленная чётность точек (не теряется камень), слияние крайних крапанов
   у шва замкнутой кривой, исправленный Prong at End. Узлы патча с префиксом `ES `.
-- `gn_solidify_xy_build.py` — группа `Solidify XY`: толщина строго в плоскости XY
+- `tools/gn_solidify_xy_build.py` — группа `Solidify XY`: толщина строго в плоскости XY
   (Z не меняется), Thickness = реальная толщина по нормали.
-- `gn_instance_face_build.py` — графы «Instance Face» / «My Instance Face».
+- `gn_instance_face_build.py` (корень, только локально) — графы «Instance Face» / «My Instance Face».
 
 # Открытая задача: Gems List on Curve
 
