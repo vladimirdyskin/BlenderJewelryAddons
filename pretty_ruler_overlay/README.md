@@ -16,7 +16,7 @@ native Measure tool.
 
 1. Create measurements with Blender's native Measure tool.
 2. Open **3D View > Sidebar > View > Pretty Ruler**.
-3. Enable the overlay and click **Refresh List**.
+3. Enable the overlay. The measurement list updates automatically.
 
 ## Installation
 

@@ -2,7 +2,7 @@
 bl_info = {
     "name": "Pretty Ruler Overlay",
     "author": "Vladimir",
-    "version": (0, 7, 0),
+    "version": (0, 8, 0),
     "blender": (5, 1, 0),
     "location": "View3D > Sidebar > View > Pretty Ruler",
     "description": "Styled dimension graphics over the native Measure tool",
@@ -18,14 +18,14 @@ from bpy_extras import view3d_utils
 from mathutils import Vector
 
 _handle = None
-_shader = None
+_shaders = {}
+SYNC_INTERVAL = 0.5
 
 
-def _get_shader():
-    global _shader
-    if _shader is None:
-        _shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-    return _shader
+def _get_shader(name):
+    if name not in _shaders:
+        _shaders[name] = gpu.shader.from_builtin(name)
+    return _shaders[name]
 
 
 def get_ruler_strokes():
@@ -42,30 +42,99 @@ def get_ruler_strokes():
     return out
 
 
-def _line(a, b, color, width):
-    shader = _get_shader()
-    gpu.state.line_width_set(width)
+def _stroke_key(pts):
+    """Идентификатор линейки по её точкам (у нативных линеек нет своего id)."""
+    return ";".join("{:.5f},{:.5f},{:.5f}".format(*p) for p in pts)
+
+
+def _match_flags(old, new):
+    """old: [(точки, enabled)], new: [точки] -> enabled для new.
+    Сначала точное совпадение (линейку не трогали), затем общая точка при том же
+    числе точек (линейку тянули за один конец). Новые линейки включены."""
+    used = set()
+    flags = [None] * len(new)
+    for exact in (True, False):
+        for i, pts in enumerate(new):
+            if flags[i] is not None:
+                continue
+            for j, (opts, enabled) in enumerate(old):
+                if j in used or len(opts) != len(pts):
+                    continue
+                hit = opts == pts if exact else bool(set(opts) & set(pts))
+                if hit:
+                    used.add(j)
+                    flags[i] = enabled
+                    break
+    return [True if f is None else f for f in flags]
+
+
+def _label(pts, props):
+    dec = props.decimals
+    if len(pts) == 2:
+        dist = (pts[1] - pts[0]).length
+        return ("{:." + str(dec) + "f}").format(dist) + props.unit_suffix
+    if len(pts) == 3:
+        v1 = pts[0] - pts[1]
+        v2 = pts[2] - pts[1]
+        if v1.length and v2.length:
+            ang = math.degrees(v1.angle(v2))
+            return "∠ " + ("{:." + str(dec) + "f}").format(ang) + "°"
+        return "Angle"
+    return "Ruler"
+
+
+def sync_items(props):
+    """Приводит список к текущим линейкам; флаги переносятся по геометрии, а не по индексу."""
+    strokes = get_ruler_strokes()
+    keys = [_stroke_key(pts) for pts in strokes]
+    items = props.items
+    if [it.key for it in items] != keys:
+        old = [(it.key.split(";"), it.enabled) for it in items]
+        flags = _match_flags(old, [k.split(";") for k in keys])
+        items.clear()
+        for key, enabled in zip(keys, flags):
+            it = items.add()
+            it.key = key
+            it.enabled = enabled
+    for it, pts in zip(items, strokes):
+        name = _label(pts, props)
+        if it.name != name:
+            it.name = name
+
+
+def _sync_timer():
+    # Запись в данные сцены из draw-колбэка запрещена, поэтому список ведёт таймер
+    props = getattr(bpy.context.scene, "pretty_ruler", None)
+    if props is not None and props.enabled:
+        sync_items(props)
+    return SYNC_INTERVAL
+
+
+def _draw_lines(points, prim, color, width):
+    # line_width_set не работает на Metal — толщину даёт polyline-шейдер
+    shader = _get_shader('POLYLINE_UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
-    batch = batch_for_shader(shader, 'LINES', {"pos": [a, b]})
+    batch = batch_for_shader(shader, prim, {"pos": [(p[0], p[1], 0.0) for p in points]})
+    _, _, w, h = gpu.state.viewport_get()
     shader.bind()
+    shader.uniform_float("viewportSize", (float(w), float(h)))
+    shader.uniform_float("lineWidth", width)
     shader.uniform_float("color", color)
     batch.draw(shader)
+
+
+def _line(a, b, color, width):
+    _draw_lines([a, b], 'LINES', color, width)
 
 
 def _polyline(points, color, width):
     if len(points) < 2:
         return
-    shader = _get_shader()
-    gpu.state.line_width_set(width)
-    gpu.state.blend_set('ALPHA')
-    batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": points})
-    shader.bind()
-    shader.uniform_float("color", color)
-    batch.draw(shader)
+    _draw_lines(points, 'LINE_STRIP', color, width)
 
 
 def _tris(points, color):
-    shader = _get_shader()
+    shader = _get_shader('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
     batch = batch_for_shader(shader, 'TRIS', {"pos": points})
     shader.bind()
@@ -162,6 +231,12 @@ def _draw_text_along(center, line_dir, text, props):
     blf.disable(fid, blf.ROTATION)
 
 
+def _away_from_center(region, rv3d, pt2d):
+    """Экранный вектор от проекции начала координат к точке; None, если начало за камерой."""
+    c2d = view3d_utils.location_3d_to_region_2d(region, rv3d, Vector((0.0, 0.0, 0.0)))
+    return None if c2d is None else pt2d - c2d
+
+
 def _draw_distance(pts, props, region, rv3d):
     a3d, b3d = pts[0], pts[1]
     a2d = view3d_utils.location_3d_to_region_2d(region, rv3d, a3d)
@@ -178,9 +253,12 @@ def _draw_distance(pts, props, region, rv3d):
     if props.extension_lines and props.ext_offset != 0:
         signed_perp = perp.copy()
         if props.ext_auto_side:
-            mid_world = (a3d + b3d) * 0.5
-            desired = 1.0 if mid_world.x >= 0.0 else -1.0
-            if abs(signed_perp.x) > 1e-4 and (signed_perp.x * desired) < 0:
+            # от центра сцены на экране; центр на оси размера -> вверх (вертикальный -> вправо)
+            away = _away_from_center(region, rv3d, (a2d + b2d) * 0.5)
+            s = signed_perp.dot(away) if away is not None else 0.0
+            if abs(s) < 1.0:
+                s = signed_perp.y or signed_perp.x
+            if s < 0:
                 signed_perp = -signed_perp
             mag = abs(props.ext_offset)
         else:
@@ -197,8 +275,11 @@ def _draw_distance(pts, props, region, rv3d):
     dist = (b3d - a3d).length
     text = ("{:." + str(props.decimals) + "f}").format(dist) + props.unit_suffix
     d = (P1 - P0).normalized()
+    tw, th = _text_dims(text, props.font_size)
+    # «малый» — когда на экране между концами не помещаются текст и стрелки
+    caps = 2.0 * props.arrow_size if props.endcap_style == 'ARROW' else 0.0
 
-    if dist < props.small_threshold:
+    if (P1 - P0).length < tw + caps + 8.0:
         # Small style: arrows outside pointing in, dimension line extended, leader + shelf + text
         stub = max(props.arrow_size, 8.0) * 1.4
         out0 = P0 - d * stub
@@ -206,13 +287,12 @@ def _draw_distance(pts, props, region, rv3d):
         _line(out0, out1, color, props.line_width)
         _arrow_inward(P0, -d, props.arrow_size, color)
         _arrow_inward(P1, d, props.arrow_size, color)
-        # leader direction by world X
-        mid_world = (a3d + b3d) * 0.5
-        side = 1.0 if mid_world.x >= 0.0 else -1.0
+        # выноска — в сторону от центра сцены на экране
         anchor = (P0 + P1) * 0.5
+        away = _away_from_center(region, rv3d, anchor)
+        side = -1.0 if away is not None and away.x < 0.0 else 1.0
         diag = Vector((side, 1.0)).normalized()
         elbow = anchor + diag * props.small_leader_length
-        tw, th = _text_dims(text, props.font_size)
         shelf_len = tw + 12.0
         shelf_end = elbow + Vector((side, 0.0)) * shelf_len
         _line(anchor, elbow, color, props.line_width)
@@ -263,20 +343,21 @@ def _draw_angle(pts, props, region, rv3d):
 
 def draw_callback():
     ctx = bpy.context
-    props = ctx.scene.pretty_ruler
+    props = getattr(ctx.scene, "pretty_ruler", None)
+    if props is None or not props.enabled:
+        return
     region = ctx.region
     rv3d = ctx.region_data
     if rv3d is None:
         return
-    items = props.items
-    for i, pts in enumerate(get_ruler_strokes()):
-        if i < len(items) and not items[i].enabled:
+    hidden = {it.key for it in props.items if not it.enabled}
+    for pts in get_ruler_strokes():
+        if hidden and _stroke_key(pts) in hidden:
             continue
         if len(pts) == 2:
             _draw_distance(pts, props, region, rv3d)
         elif len(pts) == 3:
             _draw_angle(pts, props, region, rv3d)
-    gpu.state.line_width_set(1.0)
     gpu.state.blend_set('NONE')
 
 
@@ -300,7 +381,8 @@ def redraw_all(self, context):
 
 
 def update_enabled(self, context):
-    enable_draw() if self.enabled else disable_draw()
+    if self.enabled:
+        sync_items(self)
     redraw_all(self, context)
 
 
@@ -332,6 +414,7 @@ def update_hide_native(self, context):
 class PrettyRulerItem(bpy.types.PropertyGroup):
     enabled: bpy.props.BoolProperty(name="", default=True, update=redraw_all)
     name: bpy.props.StringProperty(default="Ruler")
+    key: bpy.props.StringProperty()
 
 
 class PRETTYRULER_OT_refresh(bpy.types.Operator):
@@ -340,27 +423,7 @@ class PRETTYRULER_OT_refresh(bpy.types.Operator):
     bl_description = "Sync the list with current ruler measurements"
 
     def execute(self, context):
-        props = context.scene.pretty_ruler
-        strokes = get_ruler_strokes()
-        old = [it.enabled for it in props.items]
-        props.items.clear()
-        dec = props.decimals
-        for i, pts in enumerate(strokes):
-            it = props.items.add()
-            it.enabled = old[i] if i < len(old) else True
-            if len(pts) == 2:
-                dist = (pts[1] - pts[0]).length
-                it.name = ("{:." + str(dec) + "f}").format(dist) + props.unit_suffix
-            elif len(pts) == 3:
-                v1 = pts[0] - pts[1]
-                v2 = pts[2] - pts[1]
-                if v1.length and v2.length:
-                    ang = math.degrees(v1.angle(v2))
-                    it.name = "\u2220 " + ("{:." + str(dec) + "f}").format(ang) + "\u00b0"
-                else:
-                    it.name = "Angle"
-            else:
-                it.name = "Ruler " + str(i)
+        sync_items(context.scene.pretty_ruler)
         redraw_all(self, context)
         return {'FINISHED'}
 
@@ -385,7 +448,6 @@ class PrettyRulerProps(bpy.types.PropertyGroup):
     line_width: bpy.props.FloatProperty(name="Line Width", default=2.0, min=0.5, max=10, update=redraw_all)
     font_size: bpy.props.IntProperty(name="Font Size", default=18, min=6, max=120, update=redraw_all)
     decimals: bpy.props.IntProperty(name="Decimals", default=2, min=0, max=4, update=redraw_all)
-    small_threshold: bpy.props.FloatProperty(name="Small Threshold", default=1.0, min=0, max=50, update=redraw_all)
     small_leader_length: bpy.props.FloatProperty(name="Leader Length", default=45.0, min=10, max=300, update=redraw_all)
     text_gap: bpy.props.FloatProperty(name="Text Gap", default=6.0, min=0, max=50, update=redraw_all)
     unit_suffix: bpy.props.StringProperty(name="Unit Suffix", default=" mm", update=redraw_all)
@@ -435,7 +497,6 @@ class VIEW3D_PT_pretty_ruler(bpy.types.Panel):
         col.prop(p, "unit_suffix")
         col.separator()
         col.label(text="Small Dimension:")
-        col.prop(p, "small_threshold")
         col.prop(p, "small_leader_length")
         col.separator()
         col.label(text="Extension Lines:")
@@ -468,9 +529,16 @@ def register():
     for c in classes:
         bpy.utils.register_class(c)
     bpy.types.Scene.pretty_ruler = bpy.props.PointerProperty(type=PrettyRulerProps)
+    # Обработчик живёт всё время работы аддона: состояние Enabled хранится в .blend,
+    # а update-колбэк при открытии файла не вызывается
+    enable_draw()
+    if not bpy.app.timers.is_registered(_sync_timer):
+        bpy.app.timers.register(_sync_timer, first_interval=SYNC_INTERVAL, persistent=True)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_sync_timer):
+        bpy.app.timers.unregister(_sync_timer)
     disable_draw()
     if hasattr(bpy.types.Scene, "pretty_ruler"):
         del bpy.types.Scene.pretty_ruler

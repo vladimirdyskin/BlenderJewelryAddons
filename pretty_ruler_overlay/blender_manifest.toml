@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "pretty_ruler_overlay"
-version = "0.7.0"
+version = "0.8.0"
 name = "Pretty Ruler Overlay"
 tagline = "Styled dimensions over the native Measure tool"
 maintainer = "Vladimir Dyskin"
