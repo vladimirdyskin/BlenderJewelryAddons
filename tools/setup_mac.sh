@@ -3,8 +3,10 @@
 #
 # Новый Mac (BlenderIJewel приватный, поэтому сначала вход в GitHub):
 #   brew install gh && gh auth login && gh auth setup-git
-#   git clone https://github.com/vladimirdyskin/BlenderJewelryAddons.git ~/Documents/GitHub/BlenderJewelryAddons
-#   ~/Documents/GitHub/BlenderJewelryAddons/tools/setup_mac.sh
+#   git clone https://github.com/vladimirdyskin/BlenderJewelryAddons.git ~/GitHub/BlenderJewelryAddons
+#   ~/GitHub/BlenderJewelryAddons/tools/setup_mac.sh
+# Не клонировать в ~/Documents, ~/Desktop, ~/Downloads: macOS не пускает туда фоновые
+# задачи, и автосинхронизация работать не будет (скрипт её тогда не ставит).
 #
 # Что делает (повторный запуск безопасен):
 #   1. Клонирует BlenderIJewel рядом с этим репозиторием, если его нет
@@ -112,6 +114,15 @@ bpy.ops.wm.save_userpref()
 fi
 
 # --- 4. авто-синхронизация ---
+protected() {
+    case "$1/" in "$HOME/Documents/"*|"$HOME/Desktop/"*|"$HOME/Downloads/"*) return 0 ;; esac
+    return 1
+}
+if [ $DO_LAUNCHD -eq 1 ] && { protected "$SUITE_DIR" || protected "$IJEWEL_DIR"; }; then
+    echo "Auto-sync skipped: repositories inside ~/Documents, ~/Desktop or ~/Downloads are not" >&2
+    echo "accessible to background jobs on macOS. Clone into ~/GitHub, or run tools/sync.sh by hand." >&2
+    DO_LAUNCHD=0
+fi
 if [ $DO_LAUNCHD -eq 1 ]; then
     plist="$HOME/Library/LaunchAgents/$LABEL.plist"
     mkdir -p "$(dirname "$plist")" "$HOME/Library/Logs"
