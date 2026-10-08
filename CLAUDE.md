@@ -22,7 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. **ВСЕГДА сохраняй исходники.** Код, который гоняешь инлайн через
    `execute_blender_code`, живёт только в транскрипте и теряется. Сборку/правку
    графа дублируй в идемпотентный `.py` (комментарии на русском, print на английском).
-   Корень `ClaudeHelp/` в git **не попадает** (см. «Репозиторий») — скрипт, который
+   Корень репозитория в git **не попадает** (см. «Репозиторий») — скрипт, который
    нужен на всех Mac, клади в `tools/`.
 
 3. **MCP может отвалиться посреди серии вызовов** ("No such tool available", таймаут).
@@ -41,10 +41,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Репозиторий и установка аддонов
 
-`ClaudeHelp/` = git-репозиторий `github.com/vladimirdyskin/BlenderJewelryAddons` (публичный).
+Рабочая копия: `~/GitHub/BlenderJewelryAddons` = `github.com/vladimirdyskin/BlenderJewelryAddons`
+(публичный). На всех Mac одинаково, Blender грузит аддоны прямо из неё.
+Старая папка `~/Documents/Blender/ClaudeHelp` (Mac mini) больше не используется.
 `.gitignore` — белый список: в git только `tools/`, `parametric_gems/`, `jewel_tools/`,
 `pretty_ruler_overlay/`, `jewelry_suite/`, `README.md`, `LICENSE.md`, `CLAUDE.md`.
-Скрипты в корне (`gn_*_build.py`, `inspect_*`, `*_live.py`) — локальные, только на основном Mac.
+Скрипты в корне (`gn_*_build.py`, `inspect_*`, `*_live.py`), `dist/`, `AGENTS.md` — локальные, вне git.
 
 - **Jewelry Suite** (extension, id `jewelry_suite`): папка `jewelry_suite/` собрана из
   относительных симлинков на модули `jewel_tools/`, `parametric_gems/`, `pretty_ruler_overlay/`.
@@ -52,12 +54,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   (`jewelry_suite/__init__.py`) + в список `SUITE_SUBMODULES` в `tools/enable_jewelry_suite_live.py`.
   Перезагрузка в открытом Blender: прогнать `tools/enable_jewelry_suite_live.py` через MCP.
 - **iJewel WebGI Exporter** — отдельный приватный репозиторий `BlenderIJewel`,
-  legacy-аддон (`bl_info`), на этом Mac: `~/DocumentsOffline/GitHub/BlenderIJewel`.
+  legacy-аддон (`bl_info`), клон `~/GitHub/BlenderIJewel` (рядом с этим репозиторием).
 - **Подключение к Blender — симлинками**, обновление — ручным pull:
   - `extensions/user_default/jewelry_suite` → `<клон>/jewelry_suite`
   - `scripts/addons/BlenderIJewel` → `<клон BlenderIJewel>`
   - Новый Mac: `tools/setup_mac.sh` (клоны, симлинки для всех Blender 5.2+, включение аддонов).
-  - Обновить: `tools/sync.sh <BlenderJewelryAddons> <BlenderIJewel>` (`pull --ff-only`,
+    Blender не в `/Applications` (Mac mini: `/Volumes/DataEx/Application/Blender.app`) —
+    запускать с `BLENDER=<...>/Blender.app/Contents/MacOS/Blender`.
+  - Обновить: `tools/sync.sh ~/GitHub/BlenderJewelryAddons ~/GitHub/BlenderIJewel` (`pull --ff-only`,
     репозиторий с локальными правками пропускается). Потом в Blender Reload Scripts.
 
 # Запуск скриптов

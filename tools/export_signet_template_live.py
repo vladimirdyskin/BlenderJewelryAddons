@@ -6,10 +6,7 @@ import bpy
 
 
 SOURCE_OBJECT = "RingBaseProto"
-OUTPUT_PATH = Path(
-    "/Volumes/DataEx/Users/vladimirdyskin/Documents/Blender/ClaudeHelp/"
-    "parametric_gems/assets/signets.blend"
-)
+OUTPUT_PATH = Path.home() / "GitHub/BlenderJewelryAddons/parametric_gems/assets/signets.blend"
 
 
 obj = bpy.data.objects.get(SOURCE_OBJECT)
