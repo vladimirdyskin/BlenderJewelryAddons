@@ -14,6 +14,9 @@
 #        scripts/addons/BlenderIJewel          -> <BlenderIJewel>
 #      Настоящие папки не трогает; старый симлинк заменяет; файл (алиас Finder) убирает в .bak.
 #   3. Включает аддоны в Blender (из командной строки) и сохраняет настройки.
+#      Отдельные копии модулей Suite (parametric_gems, jewel_tools, pretty_ruler_overlay)
+#      выключает: активна должна быть только версия из git. Их папки скрипт не удаляет,
+#      а показывает предупреждением на шаге 2.
 #      Blender в этот момент лучше закрыть, иначе при выходе он перезапишет настройки своими.
 #
 # Обновление — вручную: tools/sync.sh <BlenderJewelryAddons> <BlenderIJewel>
@@ -84,6 +87,13 @@ for ver in "${versions[@]}"; do
     echo "Blender $ver:"
     link "$SUITE_DIR/jewelry_suite" "$BLENDER_CONFIG/$ver/extensions/user_default/jewelry_suite"
     link "$IJEWEL_DIR" "$BLENDER_CONFIG/$ver/scripts/addons/BlenderIJewel"
+    # старые отдельные копии модулей Suite — git их не обновляет
+    for old in extensions/user_default/parametric_gems extensions/user_default/jewel_tools \
+               extensions/user_default/pretty_ruler_overlay scripts/addons/pretty_ruler_overlay.py; do
+        if [ -e "$BLENDER_CONFIG/$ver/$old" ] && [ ! -L "$BLENDER_CONFIG/$ver/$old" ]; then
+            echo "  WARN old standalone copy (disabled below, remove it): $BLENDER_CONFIG/$ver/$old"
+        fi
+    done
 done
 
 # --- 3. включить аддоны ---
@@ -98,14 +108,23 @@ if [ $DO_ENABLE -eq 1 ]; then
     else
         echo "Enabling add-ons with $BLENDER"
         "$BLENDER" --background --python-exit-code 1 --python-expr '
+import addon_utils
 import bpy
 bpy.ops.preferences.addon_refresh()
+# тот же список, что LEGACY_MODULES в tools/enable_jewelry_suite_live.py.
+# addon_utils.disable, а не оператор: выгрузка дубля падает на классах, которые
+# перехватил Suite, оператор на этом прерывает скрипт, а disable убирает аддон из настроек
+for module in ("bl_ext.user_default.parametric_gems", "bl_ext.user_default.jewel_tools",
+               "bl_ext.user_default.pretty_ruler_overlay", "pretty_ruler_overlay"):
+    if module in bpy.context.preferences.addons:
+        addon_utils.disable(module, default_set=True, handle_error=lambda ex: None)
+        print("DISABLED", module)
 for module in ("bl_ext.user_default.jewelry_suite", "BlenderIJewel"):
     if module not in bpy.context.preferences.addons:
         bpy.ops.preferences.addon_enable(module=module)
     print("ENABLED" if module in bpy.context.preferences.addons else "FAILED", module)
 bpy.ops.wm.save_userpref()
-' 2>&1 | grep -E "^(ENABLED|FAILED)" || true
+' 2>&1 | grep -E "^(DISABLED|ENABLED|FAILED)" || true
     fi
 fi
 
