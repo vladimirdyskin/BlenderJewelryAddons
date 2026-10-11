@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import design_report_png, face_tools, gems, gn_instance_face, gn_subdivide_x, hires_snapshot, link_gems, pretty_ruler, surface_pave, ui_panel
+from . import curve_symmetry, design_report_png, face_tools, gems, gn_instance_face, gn_subdivide_x, hires_snapshot, link_gems, pretty_ruler, surface_pave, ui_panel
 
 
 _MODULES = (
@@ -10,6 +10,7 @@ _MODULES = (
     face_tools,
     gn_instance_face,
     gn_subdivide_x,
+    curve_symmetry,
     hires_snapshot,
     link_gems,
     surface_pave,

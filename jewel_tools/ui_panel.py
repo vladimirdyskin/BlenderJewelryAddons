@@ -67,6 +67,7 @@ class VIEW3D_PT_jewel_tools(bpy.types.Panel):
         p = context.scene.jewel_subdivide_x
         box.prop(p, "segment_length")
         box.operator("object.add_subdivide_x_nodes", text="Add / Update Subdivide X", icon='GEOMETRY_NODES')
+        box.operator("curve.symmetrize_bezier", text="Symmetrize Curve", icon='MOD_MIRROR')
 
         box = L.box()
         box.label(text="Gem Optimization", icon='LINKED')
