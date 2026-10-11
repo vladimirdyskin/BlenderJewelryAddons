@@ -4,10 +4,11 @@ from pathlib import Path
 import sys
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import jewelry_suite
+from jewelry_suite import curve_symmetry as cs
 
 # Капля PadaniElementCurve.003 (PadaniRing.blend): (co, handle_left, handle_right, типы, radius, tilt)
 DROP = [
@@ -16,6 +17,14 @@ DROP = [
     ((2.3983, -0.387, 9.1287), (2.4175, 1.3413, 9.2854), (2.3891, -1.2133, 9.0538), "ALIGNED", 1.072, -0.05),
     ((-0.0019, -2.362, 9.4536), (2.0449, -2.3519, 9.4447), (-2.0486, -2.3722, 9.4626), "ALIGNED", 1.072, -0.01),
 ]
+# Правый элемент PadaniElementCurve.001: origin далеко от формы, симметрия — мировая Y = 0
+RIGHT = [
+    ((4.2289, 1.536, 8.5483), (6.1211, 1.5188, 8.3121), (2.9987, 1.5472, 8.7019), "ALIGNED", 1.0716, -0.3717),
+    ((1.7036, 4.0524, 9.4082), (2.5462, 2.9476, 9.2732), (2.6142, 5.1956, 9.3038), "FREE", 1.0716, -0.5917),
+    ((4.2689, 6.574, 8.5809), (3.2032, 6.5376, 8.9902), (6.0253, 6.6341, 7.9063), "ALIGNED", 1.0716, -0.4817),
+    ((6.2652, 4.0369, 7.4301), (6.2752, 4.7056, 7.4213), (6.2549, 3.3547, 7.439), "ALIGNED", 1.0716, -0.4617),
+]
+RIGHT_LOCATION = (0.1383, -4.0524, 1.0233)
 EPS = 1e-5
 
 
@@ -34,14 +43,18 @@ def make_curve(name: str, points, cyclic: bool = True) -> bpy.types.Object:
     return ob
 
 
+def coords(ob: bpy.types.Object) -> list[tuple]:
+    return [tuple(p.co) for s in ob.data.splines for p in s.bezier_points]
+
+
 def run(ob: bpy.types.Object, **kwargs) -> set[str]:
     bpy.context.view_layer.objects.active = ob
     return bpy.ops.curve.symmetrize_bezier(**kwargs)
 
 
-def flip(v, k: int = 0) -> Vector:
+def flip(v, k: int = 0, c: float = 0.0) -> Vector:
     v = Vector(v)
-    v[k] = -v[k]
+    v[k] = 2.0 * c - v[k]
     return v
 
 
@@ -49,13 +62,15 @@ def same(a, b) -> bool:
     return (Vector(a) - Vector(b)).length < EPS
 
 
-def assert_symmetric(spline, k: int = 0) -> None:
-    """Каждой точке есть зеркальный двойник: позиция, ручки (обмен), типы, радиус, tilt."""
+def assert_symmetric(spline, k: int = 0, mw: Matrix = Matrix.Identity(4), c: float = 0.0) -> None:
+    """Каждой точке есть зеркальный двойник (в мире, плоскость axis k = c): позиция, ручки (обмен),
+    типы, радиус, tilt."""
     pts = list(spline.bezier_points)
     for p in pts:
-        q = min(pts, key=lambda o: (o.co - flip(p.co, k)).length)
-        assert same(q.co, flip(p.co, k)), (tuple(p.co), tuple(q.co))
-        assert same(q.handle_left, flip(p.handle_right, k)) and same(q.handle_right, flip(p.handle_left, k))
+        q = min(pts, key=lambda o: (mw @ o.co - flip(mw @ p.co, k, c)).length)
+        assert same(mw @ q.co, flip(mw @ p.co, k, c)), (tuple(p.co), tuple(q.co))
+        assert same(mw @ q.handle_left, flip(mw @ p.handle_right, k, c))
+        assert same(mw @ q.handle_right, flip(mw @ p.handle_left, k, c))
         assert (q.handle_left_type, q.handle_right_type) == (p.handle_right_type, p.handle_left_type)
         assert abs(q.radius - p.radius) < EPS and abs(q.tilt - p.tilt) < EPS
 
@@ -130,12 +145,40 @@ assert same(neg.data.splines[0].bezier_points[0].co, (-2.4619, -0.4126, 9.1288))
 assert_symmetric(neg.data.splines[0])
 rot = make_curve("RotY", [((y, x, z), (hy, hx, hz), (ry, rx, rz), t, r, tl)
                           for (x, y, z), (hx, hy, hz), (rx, ry, rz), t, r, tl in DROP])
-assert run(rot, axis="Y") == {"FINISHED"}
+assert cs.pick_axis(rot) == "Y"  # Auto находит ось сам
+assert run(rot) == {"FINISHED"}
 assert_symmetric(rot.data.splines[0], k=1)
+
+# --- Origin далеко от формы (правый элемент .001): плоскость через центр мира --
+right = make_curve("Right", RIGHT)
+right.location = RIGHT_LOCATION
+bpy.context.view_layer.update()
+untouched = coords(right)
+# ничего не сделано — но FINISHED, чтобы открылась панель Adjust Last Operation
+assert run(right, axis="Y", pivot="OBJECT") == {"FINISHED"} and coords(right) == untouched
+assert run(right, axis="X") == {"FINISHED"} and coords(right) == untouched  # по X точек у плоскости нет
+assert cs.pick_axis(right) == "Y"
+assert run(right) == {"FINISHED"}  # Auto + World Origin по умолчанию
+pts = right.data.splines[0].bezier_points
+mw = right.matrix_world
+assert same(pts[2].co, RIGHT[2][0])  # верх (+Y) — мастер
+assert abs((mw @ pts[1].co).y) < EPS and abs((mw @ pts[3].co).y) < EPS  # носик и бок — на мировой Y = 0
+assert abs(pts[0].tilt - RIGHT[2][5]) < EPS  # низ получил наклон верха
+assert_symmetric(right.data.splines[0], k=1, mw=mw)
+
+# --- 3D-курсор: ось симметрии не через центр мира ------------------------------
+shifted = make_curve("Shifted", [((x + 3.0, y, z), (hx + 3.0, hy, hz), (rx + 3.0, ry, rz), t, r, tl)
+                                 for (x, y, z), (hx, hy, hz), (rx, ry, rz), t, r, tl in DROP])
+bpy.context.scene.cursor.location = (3.0, 0.0, 0.0)
+untouched = coords(shifted)
+assert run(shifted) == {"FINISHED"} and coords(shifted) == untouched  # через центр мира не пересекает
+assert run(shifted, pivot="CURSOR") == {"FINISHED"}
+assert_symmetric(shifted.data.splines[0], k=0, c=3.0)
+bpy.context.scene.cursor.location = (0.0, 0.0, 0.0)
 
 # --- Порог: точка дальше порога — не на оси, замкнутому нужно 2 -------------
 far = make_curve("Far", DROP)
-assert run(far, threshold=0.01) == {"CANCELLED"}  # верх в 0.06 от оси
+assert run(far, threshold=0.01) == {"FINISHED"}  # верх в 0.06 от оси — ни одна ось не подходит
 assert same(far.data.splines[0].bezier_points[1].co, DROP[1][0])  # ничего не тронуто
 
 # --- Разное число точек: справа 2, слева 1 — сплайн пересобирается -----------
