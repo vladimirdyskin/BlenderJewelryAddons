@@ -113,6 +113,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   (точный зазор, ряд центрируется), длина камня вдоль кривой по bbox X исходника
   (багеты), исправленная чётность точек (не теряется камень), слияние крайних крапанов
   у шва замкнутой кривой, исправленный Prong at End. Узлы патча с префиксом `ES `.
+- `tools/gn_prong_tilt_patch.py` — вход `Prong Tilt` в `My_Gems_On_Curve`: наклон крапанов
+  к камням (+) / наружу (−) вокруг их origin; 2-Prong зеркально, 4-Prong к центру камня.
+  Подгруппа `Prong Lean`, узлы `PT `. Заодно убран двойной Prong Scale XY в 4-Prong.
+- `tools/gn_tidy_gems_on_curve.py` — раскладка `My_Gems_On_Curve` по фреймам (новые `TD `),
+  удалён вход Stone Material (камни — инстансы `SampleGem` для JewelCraft, Set Material
+  на инстансы не действует). Порядок перезапуска: Exact Spacing → Prong Tilt → Tidy;
+  Tidy нужен открытый редактор нод с группой (размеры узлов есть только после отрисовки).
 - `tools/gn_solidify_xy_build.py` — группа `Solidify XY`: толщина строго в плоскости XY
   (Z не меняется), Thickness = реальная толщина по нормали.
 - `gn_instance_face_build.py` (корень, только локально) — графы «Instance Face» / «My Instance Face».
