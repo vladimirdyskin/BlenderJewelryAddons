@@ -90,6 +90,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `BLENDER_USER_RESOURCES=<папка>/5.2` (иначе фоновый Blender пишет в настоящие настройки).
 - **OpenImageIO в Blender собран без FreeType** (`render_text` не работает) — текст в PNG
   рисовать через `blf` + `gpu.types.GPUOffScreen`.
+- **Инстанс с отрицательным масштабом** (зеркало, det < 0): после Realize Instances или переноса
+  `inst.object.data` по `matrix_world` грани вывернуты (объём −1) — Flip Faces /
+  `bmesh.ops.reverse_faces`, иначе Boolean выбрасывает копию как дыру.
+- **Mesh Boolean, Manifold**: перекрытия внутри одного меша не склеивает (261 оболочка) — острова
+  через Split to Instances, каждый отдельным операндом; незамкнутый вход — молча пустой результат.
+  Одно тело и в union, и в difference (совпадающие грани) — обрывки стенок нулевой толщины:
+  объём их не видит, проверять глазами (Face Orientation).
+- **Ассет через меню Add Modifier** (`object.modifier_add_node_group`) дописывает зависимости
+  (SampleGem и пр.) без коллекции — импорт без сцены; перетаскивание из Asset Browser на объект
+  в 3D-виде кладёт их в активную коллекцию. В 5.0 убран импорт «Append (Reuse Data)».
+- **Ссылка модификатора на объект** (Boolean → Object) не считается пользователем: объект без
+  коллекции с такой ссылкой пропадает при сохранении.
+- `evaluated_geometry()` держать в переменной, пока читаешь `instances_pointcloud()`
+  (иначе ReferenceError). Python-обёртки коллекций `bpy.data.*` новые при каждом обращении —
+  сравнивать их через `id()` нельзя.
 
 # Технические заметки по MCP
 
@@ -135,6 +150,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   append из другого кольца: в `Ring5Diams.blend` в группу добавлены Mesh Boolean по объекту
   `Vert` этого кольца. После обновления сверить камни/крапаны: исправленная чётность может
   добавить камень — прежнюю раскладку возвращает Spacing побольше.
+- `jewel_tools/metal_union.py` — кнопка Build Metal Mesh (Jewel Tools → Metal for STL): металл
+  выделенных объектов (меши + GN-инстансы, камни пропускаются) одним замкнутым мешем `Metal`
+  в коллекции `Metal`; вход `Cutter` модификатора — катер по матрице каждого камня, вычитается
+  после union. Manifold по островам: кольцо из 260 частей за ~0.3 с (Exact — 13.6 с).
+  STL пока вручную: выделить `Metal` → File → Export → STL.
 - `tools/gn_solidify_xy_build.py` — группа `Solidify XY`: толщина строго в плоскости XY
   (Z не меняется), Thickness = реальная толщина по нормали.
 - `gn_instance_face_build.py` (корень, только локально) — графы «Instance Face» / «My Instance Face».
