@@ -120,6 +120,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   удалён вход Stone Material (камни — инстансы `SampleGem` для JewelCraft, Set Material
   на инстансы не действует). Порядок перезапуска: Exact Spacing → Prong Tilt → Tidy;
   Tidy нужен открытый редактор нод с группой (размеры узлов есть только после отрисовки).
+- **Мастер-версия `My_Gems_On_Curve`** — ассет (каталог «MyAsset») в
+  `~/Library/Mobile Documents/com~apple~CloudDocs/Documents/Blender/AssetLibrary/MyAssets.blend`
+  (библиотека «User Library»); там же `My_Gems_On_CurvePrev` — старая версия.
+  В каждом кольце своя копия группы, правки сами не расходятся. Старую копию в кольце
+  обновлять скриптами по порядку (Exact Spacing → Prong Tilt → Tidy) на её же группе, а не
+  append из другого кольца: в `Ring5Diams.blend` в группу добавлены Mesh Boolean по объекту
+  `Vert` этого кольца. После обновления сверить камни/крапаны: исправленная чётность может
+  добавить камень — прежнюю раскладку возвращает Spacing побольше.
 - `tools/gn_solidify_xy_build.py` — группа `Solidify XY`: толщина строго в плоскости XY
   (Z не меняется), Thickness = реальная толщина по нормали.
 - `gn_instance_face_build.py` (корень, только локально) — графы «Instance Face» / «My Instance Face».
