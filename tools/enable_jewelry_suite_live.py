@@ -19,6 +19,7 @@ SUITE_SUBMODULES = (
     "pave_layout",
     "pave_live",
     "surface_pave",
+    "metal_union",
     "ui_panel",
     "pretty_ruler",
 )

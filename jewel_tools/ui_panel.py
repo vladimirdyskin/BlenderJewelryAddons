@@ -86,6 +86,10 @@ class VIEW3D_PT_jewel_tools(bpy.types.Panel):
         operator.scope = 'ALL'
 
         box = L.box()
+        box.label(text="Metal for STL", icon='MESH_DATA')
+        box.operator("object.metal_union", text="Build Metal Mesh", icon='MOD_BOOLEAN')
+
+        box = L.box()
         box.label(text="Design Report", icon='TEXT')
         box.prop(context.scene, "jewel_report_dir", text="Folder")
         box.operator("wm.jewel_design_report_png", text="Save Report (PNG)", icon='IMAGE_DATA')
