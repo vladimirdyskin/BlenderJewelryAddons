@@ -118,13 +118,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   Подгруппа `Prong Lean`, узлы `PT `. Заодно убран двойной Prong Scale XY в 4-Prong.
 - `tools/gn_tidy_gems_on_curve.py` — раскладка `My_Gems_On_Curve` по фреймам (новые `TD `),
   удалён вход Stone Material (камни — инстансы `SampleGem` для JewelCraft, Set Material
-  на инстансы не действует). Порядок перезапуска: Exact Spacing → Prong Tilt → Tidy;
+  на инстансы не действует). Порядок перезапуска: Exact Spacing → Prong Tilt → Boolean → Tidy;
   Tidy нужен открытый редактор нод с группой (размеры узлов есть только после отрисовки).
+- `tools/gn_boolean_patch.py` — панель Boolean в `My_Gems_On_Curve`: `Boolean Object` вычитается
+  из крапанов и кастов после зеркала, камни не режутся и остаются инстансами. В меш уходят
+  только задетые копии (сфера по Instance Bounds), остальные — инстансы (экспорт iJewel
+  переиспользует их меш: 67 KB против 879 KB при Realize). Узлы `BO `. Решатель Exact +
+  Self Intersection; `Fast Solver` = Manifold (в ~50 раз быстрее), но на незамкнутом теле
+  молча удаляет задетые копии. Realize у инстанса с отрицательным масштабом выворачивает
+  грани — после Realize зеркальных копий нужен Flip Faces.
 - **Мастер-версия `My_Gems_On_Curve`** — ассет (каталог «MyAsset») в
   `~/Library/Mobile Documents/com~apple~CloudDocs/Documents/Blender/AssetLibrary/MyAssets.blend`
   (библиотека «User Library»); там же `My_Gems_On_CurvePrev` — старая версия.
   В каждом кольце своя копия группы, правки сами не расходятся. Старую копию в кольце
-  обновлять скриптами по порядку (Exact Spacing → Prong Tilt → Tidy) на её же группе, а не
+  обновлять скриптами по порядку (Exact Spacing → Prong Tilt → Boolean → Tidy) на её же группе, а не
   append из другого кольца: в `Ring5Diams.blend` в группу добавлены Mesh Boolean по объекту
   `Vert` этого кольца. После обновления сверить камни/крапаны: исправленная чётность может
   добавить камень — прежнюю раскладку возвращает Spacing побольше.

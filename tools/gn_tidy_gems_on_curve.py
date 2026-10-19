@@ -8,6 +8,7 @@
 - Внутри фрейма узлы раскладываются по слоям (длиннейший путь связей),
   фреймы — колонками слева направо по ходу данных.
 - Подписи неочевидных переключателей (2/4 крапана от X/Y Offset).
+- Узлы патча Boolean (BO) — во фрейм Boolean под Output; без патча фрейм удаляется.
 - Удалены вход «Stone Material» и его мёртвая ветка (Set Material -> Group.002 без выхода).
   Камни выводятся инстансом объекта SampleGem ради JewelCraft, а Set Material
   на инстансы не действует — материал камня задаётся на самом SampleGem.
@@ -51,7 +52,11 @@ FRAMES = {
     "TD Output": ("Output", [
         "Group Input.015", "Switch.002", "Switch.017", "Join Geometry", "Realize Instances",
         "Group Input.022", "Switch.004", "Group Input.006", "Group.010", "Group Output"]),
+    "TD Boolean": ("Boolean", []),
 }
+
+# узлы по префиксу имени -> фрейм (патчи, которых может не быть в файле)
+PREFIX_FRAMES = {"BO ": "TD Boolean"}
 
 # колонки фреймов слева направо, в колонке — сверху вниз
 COLUMNS = [
@@ -60,7 +65,7 @@ COLUMNS = [
     ["TD Stones", "Frame.005", "Frame.006"],
     ["Frame.008", "TD Seam Prongs"],
     ["Frame.002", "Frame.001"],
-    ["TD Output"],
+    ["TD Output", "TD Boolean"],
 ]
 
 # общий ES Input -> локальные входы фреймов: (новый узел, потребители)
@@ -130,6 +135,13 @@ def _frames(ng):
             node = N[m]
             if node.parent != fr:
                 node.parent = fr
+    for n in N:
+        for prefix, name in PREFIX_FRAMES.items():
+            if n.name.startswith(prefix) and n.bl_idname != "NodeFrame" and n.parent != N[name]:
+                n.parent = N[name]
+    for name in FRAMES:
+        if not any(n.parent == N[name] for n in N):
+            N.remove(N[name])        # патча нет — пустой фрейм не нужен
     loose = [n.name for n in N if n.parent is None and n.bl_idname != "NodeFrame"]
     if loose:
         raise RuntimeError("Nodes without frame: %s" % loose)
@@ -210,14 +222,15 @@ def tidy(ng):
     for node, label in LABELS.items():
         ng.nodes[node].label = label
     _redraw()
-    for name in FRAMES:
+    frames = [name for name in FRAMES if name in ng.nodes]
+    for name in frames:
         _layout_frame(ng, ng.nodes[name])
     _redraw()
 
     x = 0.0
     for col in COLUMNS:
         y, width = 0.0, 0.0
-        for name in col:
+        for name in (n for n in col if n in frames):
             fr = ng.nodes[name]
             fr.location = (x, y)
             w, h = _frame_size(ng, fr)
