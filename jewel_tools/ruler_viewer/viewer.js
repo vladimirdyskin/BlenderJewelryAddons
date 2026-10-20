@@ -3,11 +3,17 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { DimensionOverlay } from './overlay2d.js';
 
-const VIEWER_VERSION = 2; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 4; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
+const PREFS_KEY = 'prettyRuler.material';
+const CAVITY_RADIUS_PX = 1.5; // sample offset in CSS px (scaled by DPR via the buffer size)
+const CAVITY_RIDGE = 1.0, CAVITY_VALLEY = 1.0; // Blender workbench curvature factors
 
 const $ = (id) => document.getElementById(id);
 const stage = $('stage');
@@ -41,6 +47,79 @@ controls.addEventListener('change', markDirty);
 
 const overlay = new DimensionOverlay(overlayCanvas);
 const loader = new GLTFLoader();
+
+// ---------- Material prefs (persisted) ----------
+const prefs = { clay: true, color: '#7a2e2e', cavityClay: true, cavityBlender: false };
+try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY)) || {}); } catch { /* ignore */ }
+function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* ignore */ } }
+function cavityOn() { return prefs.clay ? prefs.cavityClay : prefs.cavityBlender; }
+
+// Shared matte clay material (Blender sculpt-mode look); originals are kept in mesh.userData.originalMaterial.
+const clayMat = new THREE.MeshStandardMaterial({ color: prefs.color, roughness: 0.85, metalness: 0, envMapIntensity: 0.6, side: THREE.DoubleSide });
+
+// ---------- Cavity: Blender workbench "Screen" cavity (curvature from neighbouring view-space normals) ----------
+// Normals+coverage go to normalRT (alpha 0 = background), then one full-screen pass multiplies the linear color
+// buffer by (1 + curvature) and applies tone mapping / sRGB itself, so the background stays exactly as rendered.
+const normalMat = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });
+const normalRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
+const renderPass = new RenderPass(scene, camera);
+const cavityPass = new ShaderPass({
+  uniforms: {
+    tDiffuse: { value: null },
+    tNormal: { value: null }, // set below: ShaderPass clones uniforms and drops render-target textures
+    texel: { value: new THREE.Vector2() },
+    ridge: { value: 0.5 / (CAVITY_RIDGE * CAVITY_RIDGE) },
+    valley: { value: 0.7 / (CAVITY_VALLEY * CAVITY_VALLEY) },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse, tNormal;
+    uniform vec2 texel;
+    uniform float ridge, valley;
+    varying vec2 vUv;
+    float softClamp(float c, float k) { return c < 0.5 / k ? c * (1.0 - c * k) : 0.25 / k; }
+    void main() {
+      gl_FragColor = texture2D(tDiffuse, vUv);
+      vec4 c = texture2D(tNormal, vUv);
+      if (c.a < 0.5) {
+        // Background: no cavity and no tone mapping (same as the direct render path).
+        #include <colorspace_fragment>
+        return;
+      }
+      vec4 u = texture2D(tNormal, vUv + vec2(0.0, texel.y));
+      vec4 d = texture2D(tNormal, vUv - vec2(0.0, texel.y));
+      vec4 r = texture2D(tNormal, vUv + vec2(texel.x, 0.0));
+      vec4 l = texture2D(tNormal, vUv - vec2(texel.x, 0.0));
+      if (min(min(u.a, d.a), min(r.a, l.a)) > 0.5) {
+        float diff = 2.0 * ((u.g - d.g) + (r.r - l.r)); // normal divergence: >0 ridge, <0 valley
+        float curv = diff < 0.0 ? -2.0 * softClamp(-diff, valley) : 2.0 * softClamp(diff, ridge);
+        gl_FragColor.rgb *= 1.0 + curv;
+      }
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+});
+cavityPass.uniforms.tNormal.value = normalRT.texture;
+composer.addPass(renderPass);
+composer.addPass(cavityPass);
+renderer.setClearColor(0x000000, 0); // used by the normal pass only (scene.background covers the color pass)
+
+function render() {
+  if (!cavityOn()) { renderer.render(scene, camera); return; }
+  const bg = scene.background;
+  scene.background = null;
+  scene.overrideMaterial = normalMat;
+  renderer.setRenderTarget(normalRT);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  scene.overrideMaterial = null;
+  scene.background = bg;
+  renderPass.camera = camera;
+  composer.render();
+}
 
 const state = {
   root: null,
@@ -81,6 +160,10 @@ function resize() {
   perspCam.aspect = w / Math.max(1, h);
   perspCam.updateProjectionMatrix();
   updateOrthoFrustum();
+  composer.setPixelRatio(dpr);
+  composer.setSize(w, h);
+  normalRT.setSize(Math.round(w * dpr), Math.round(h * dpr));
+  cavityPass.uniforms.texel.value.set(CAVITY_RADIUS_PX / Math.max(1, w), CAVITY_RADIUS_PX / Math.max(1, h));
   overlay.resize(w, h, dpr);
   markDirty();
 }
@@ -92,7 +175,7 @@ function loop() {
   controls.update();
   if (!dirty) return;
   dirty = false;
-  renderer.render(scene, camera);
+  render();
   overlay.render(project);
 }
 loop();
@@ -200,11 +283,23 @@ function forceOpaque(root) {
   });
 }
 
+// Swap every mesh between the shared clay material and its original GLB material(s).
+function applyMaterials() {
+  if (!state.root) return;
+  state.root.traverse((o) => {
+    if (!o.isMesh) return;
+    if (!o.userData.originalMaterial) o.userData.originalMaterial = o.material;
+    o.material = prefs.clay ? clayMat : o.userData.originalMaterial;
+  });
+  markDirty();
+}
+
 function disposeTree(root) {
   root.traverse((o) => {
     if (!o.isMesh) return;
     o.geometry.dispose();
-    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    const mat = o.userData.originalMaterial || o.material;
+    const mats = Array.isArray(mat) ? mat : [mat];
     for (const m of mats) {
       for (const v of Object.values(m)) if (v && v.isTexture) v.dispose();
       m.dispose();
@@ -219,7 +314,7 @@ async function loadScene(hash) {
   state.root = gltf.scene;
   scene.add(state.root);
   state.sceneHash = hash;
-  markDirty();
+  applyMaterials();
 }
 
 async function loadDimensions(hash) {
@@ -345,6 +440,25 @@ function setTheme(dark) {
   markDirty();
 }
 
+// ---------- Material popover ----------
+function setClay(on) { prefs.clay = on; savePrefs(); applyMaterials(); updateMatUI(); }
+function setColor(hex) { prefs.color = hex; clayMat.color.set(hex); savePrefs(); updateMatUI(); markDirty(); }
+function toggleCavity() {
+  if (prefs.clay) prefs.cavityClay = !prefs.cavityClay; else prefs.cavityBlender = !prefs.cavityBlender;
+  savePrefs();
+  updateMatUI();
+  markDirty();
+}
+function updateMatUI() {
+  $('btn-mat').classList.toggle('active', !$('matpop').hidden);
+  $('btn-clay').classList.toggle('active', prefs.clay);
+  $('btn-orig').classList.toggle('active', !prefs.clay);
+  for (const b of document.querySelectorAll('.sw')) b.classList.toggle('active', b.dataset.color === prefs.color);
+  $('mat-color').value = prefs.color;
+  $('cb-cavity').checked = cavityOn();
+}
+function toggleMatPopover(show = $('matpop').hidden) { $('matpop').hidden = !show; updateMatUI(); }
+
 $('project').textContent = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '') || 'Pretty Ruler';
 $('btn-fit').addEventListener('click', fit);
 $('btn-home').addEventListener('click', () => state.dims?.view && applyView(state.dims.view));
@@ -353,6 +467,15 @@ $('btn-proj').addEventListener('click', toggleProjection);
 $('btn-theme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme !== 'dark'));
 $('btn-panel').addEventListener('click', () => { $('panel').hidden = !$('panel').hidden; });
 $('btn-reload').addEventListener('click', () => location.reload());
+$('btn-mat').addEventListener('click', () => toggleMatPopover());
+$('btn-clay').addEventListener('click', () => setClay(true));
+$('btn-orig').addEventListener('click', () => setClay(false));
+for (const b of document.querySelectorAll('.sw')) b.addEventListener('click', () => setColor(b.dataset.color));
+$('mat-color').addEventListener('input', (e) => setColor(e.target.value));
+$('cb-cavity').addEventListener('change', toggleCavity);
+document.addEventListener('pointerdown', (e) => {
+  if (!$('matpop').hidden && !e.target.closest('#matpop, #btn-mat')) toggleMatPopover(false);
+});
 
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -361,8 +484,11 @@ window.addEventListener('keydown', (e) => {
     case 'h': if (state.dims?.view) applyView(state.dims.view); break;
     case 'd': toggleDims(); break;
     case 'o': toggleProjection(); break;
+    case 'm': setClay(!prefs.clay); break;
+    case 'c': toggleCavity(); break;
   }
 });
 
-setTheme(false);
+setTheme(true);
+updateMatUI();
 poll();

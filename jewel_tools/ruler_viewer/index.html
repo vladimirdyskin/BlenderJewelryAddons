@@ -1,6 +1,6 @@
-<!-- pretty-ruler-viewer v2 -->
+<!-- pretty-ruler-viewer v4 -->
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
@@ -45,6 +45,18 @@
   #reload { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); display: flex; gap: 10px;
     align-items: center; padding: 6px 12px; background: var(--bar); border: 1px solid var(--border); border-radius: 8px; }
   #reload[hidden] { display: none; }
+  #matpop { position: absolute; top: 10px; right: 10px; width: 230px; padding: 10px; display: flex; flex-direction: column;
+    gap: 10px; background: var(--bar); border: 1px solid var(--border); border-radius: 8px; z-index: 3; }
+  #matpop[hidden] { display: none; }
+  #matpop .row { display: flex; gap: 6px; }
+  #matpop .row button { flex: 1; }
+  #matpop label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  #matpop input[type="checkbox"] { width: 18px; height: 18px; margin: 0; }
+  #matpop input[type="color"] { width: 40px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px;
+    background: none; cursor: pointer; }
+  #swatches { display: flex; gap: 8px; }
+  .sw { width: 26px; height: 26px; min-height: 0; padding: 0; border-radius: 50%; border: 2px solid var(--border); }
+  .sw.active { border-color: var(--fg); box-shadow: 0 0 0 2px var(--bar); }
   @media (max-width: 700px) {
     #bar { gap: 6px; padding: 6px; }
     button { min-height: 40px; padding: 4px 8px; }
@@ -72,6 +84,7 @@
     <button id="btn-dims" title="Dimensions on/off (D)" class="active">Dimensions</button>
     <button id="btn-proj" title="Ortho / Perspective (O)">Persp</button>
     <button id="btn-theme" title="Light / Dark theme">Dark</button>
+    <button id="btn-mat" title="Material (M: clay / Blender materials, C: cavity)">Material</button>
     <button id="btn-panel" title="Dimension list">List</button>
   </div>
   <div id="stage">
@@ -84,6 +97,22 @@
     <div id="reload" hidden>
       <span>Viewer updated</span>
       <button id="btn-reload">Reload</button>
+    </div>
+    <div id="matpop" hidden>
+      <div class="row">
+        <button id="btn-clay" title="Matte clay override (M)">Clay</button>
+        <button id="btn-orig" title="Materials from the GLB (M)">Blender materials</button>
+      </div>
+      <div id="swatches">
+        <button class="sw" data-color="#7a2e2e" style="background:#7a2e2e" title="Maroon"></button>
+        <button class="sw" data-color="#a0522d" style="background:#a0522d" title="Terracotta"></button>
+        <button class="sw" data-color="#8a8a8a" style="background:#8a8a8a" title="Clay grey"></button>
+        <button class="sw" data-color="#4a4a4a" style="background:#4a4a4a" title="Dark grey"></button>
+        <button class="sw" data-color="#d8cfc0" style="background:#d8cfc0" title="Bone"></button>
+        <button class="sw" data-color="#b08d57" style="background:#b08d57" title="Matte gold"></button>
+      </div>
+      <label><input type="color" id="mat-color"> Custom color</label>
+      <label><input type="checkbox" id="cb-cavity"> Cavity (C)</label>
     </div>
     <div id="toast"></div>
   </div>
