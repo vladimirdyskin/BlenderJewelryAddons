@@ -16,13 +16,18 @@ import random
 import re
 import shutil
 import string
+import struct
 import sys
 
 import bpy
 from mathutils import Vector
 
-DEFAULT_HOST = "https://mac-mini-2.tail06351a.ts.net"
+DEFAULT_HOST = "https://preview.dyskin.net"
 DEFAULT_ROOT = "~/Sites/pretty-web"
+# iPhone Safari kills the tab above ~1 GB of decoded geometry (seen with a 7M triangle scene)
+DEFAULT_MAX_TRIANGLES = 1_000_000
+DECIMATE_MIN_TRIANGLES = 10_000  # lighter objects are exported as they are
+TEMP_DECIMATE = "PR_TEMP_DECIMATE"
 VIEWER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ruler_viewer")
 SENSOR_WIDTH = 36.0  # Blender viewport sensor width used for ortho scale / fov
 _VERSION_RE = re.compile(r"<!--\s*pretty-ruler-viewer\s+v(\d+)\s*-->")
@@ -128,10 +133,14 @@ class PrettyRulerPublishPreferences(bpy.types.AddonPreferences):
     host: bpy.props.StringProperty(name="Host", default=DEFAULT_HOST)
     # one web root per machine: the folder the static server publishes
     publish_root: bpy.props.StringProperty(name="Web Root", subtype='DIR_PATH', default=DEFAULT_ROOT)
+    max_triangles: bpy.props.IntProperty(
+        name="Max Triangles", default=DEFAULT_MAX_TRIANGLES, min=0, soft_max=5_000_000,
+        description="Decimate heavy meshes on publish to stay under this total (0 = unlimited)")
 
     def draw(self, context):
         self.layout.prop(self, "host")
         self.layout.prop(self, "publish_root")
+        self.layout.prop(self, "max_triangles")
 
 
 def _prefs():
@@ -149,6 +158,11 @@ def get_publish_root():
     prefs = _prefs()
     root = prefs.publish_root if prefs and prefs.publish_root else DEFAULT_ROOT
     return os.path.expanduser(root)
+
+
+def get_max_triangles():
+    prefs = _prefs()
+    return prefs.max_triangles if prefs else DEFAULT_MAX_TRIANGLES
 
 
 def ensure_slug(props):
@@ -228,29 +242,162 @@ def _write_index(project_dir, values):
     _write_atomic(os.path.join(project_dir, "index.html"), text.encode("utf-8"))
 
 
-def _export_glb(path):
+def _triangle_counts(scene):
+    """[(obj, triangles)] of the visible mesh objects as the exporter sees them: evaluated
+    (modifiers applied), without Geometry Nodes instances (those pass through Decimate anyway)."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    out = []
+    for obj in scene.objects:
+        if obj.type != 'MESH' or not obj.visible_get():  # what use_visible exports
+            continue
+        ev = obj.evaluated_get(depsgraph)
+        me = ev.to_mesh()
+        try:
+            out.append((obj, len(me.loop_triangles)))
+        finally:
+            ev.to_mesh_clear()
+    return out
+
+
+def _decimate_for_budget(scene, budget):
+    """Temporary Decimate modifiers on the heavy meshes so the export stays near `budget`
+    triangles. Returns (touched objects, estimated exported triangles or None when untouched).
+    FONT/CURVE objects take no Decimate and are rarely heavy, so only meshes are considered."""
+    counts = _triangle_counts(scene)
+    total = sum(n for _, n in counts)
+    if budget <= 0 or total <= budget:
+        return [], None
+    ratio = budget / total
+    touched = []
+    estimate = total
+    for obj, n in counts:
+        if n <= DECIMATE_MIN_TRIANGLES or obj.mode == 'EDIT':
+            continue
+        try:
+            mod = obj.modifiers.new(TEMP_DECIMATE, 'DECIMATE')
+        except Exception:
+            mod = None  # linked / overridden object
+        if mod is None:
+            continue
+        mod.decimate_type = 'COLLAPSE'
+        mod.ratio = ratio
+        mod.use_collapse_triangulate = True
+        touched.append(obj)
+        estimate -= n - int(n * ratio)
+    if not touched:
+        return [], None
+    print("Pretty Ruler Publish: decimated %d objects to %s of %s triangles (ratio %.2f)" % (
+        len(touched), format(estimate, ","), format(total, ","), ratio))
+    return touched, estimate
+
+
+def _remove_temp_decimate(objs):
+    for obj in objs:
+        mod = obj.modifiers.get(TEMP_DECIMATE)
+        if mod is not None:
+            obj.modifiers.remove(mod)
+
+
+FLAT_PROP = "pr_flat"
+
+
+def _is_faceted(me):
+    """Evaluated mesh reads as faceted: every face flat, or most edges sharp (Smooth by Angle on gems)."""
+    if not len(me.polygons):
+        return False
+    faces = me.attributes.get("sharp_face")
+    if faces is not None:
+        flags = [False] * len(me.polygons)
+        faces.data.foreach_get("value", flags)
+        if all(flags):
+            return True
+    edges = me.attributes.get("sharp_edge")
+    if edges is not None and len(me.edges):
+        flags = [False] * len(me.edges)
+        edges.data.foreach_get("value", flags)
+        return sum(flags) * 2 >= len(flags)
+    return False
+
+
+def _faceted_mesh_names():
+    """Names of the mesh datablocks whose evaluated geometry is faceted (incl. Geometry Nodes
+    instance sources). glTF meshes keep the datablock name, so the GLB can be tagged by name."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    names = set()
+    seen = set()
+    for inst in depsgraph.object_instances:
+        obj = inst.object
+        if obj.type != 'MESH' or obj.original.data is None:
+            continue
+        name = obj.original.data.name
+        if name in seen:
+            continue
+        seen.add(name)
+        me = obj.to_mesh()
+        try:
+            if _is_faceted(me):
+                names.add(name)
+        finally:
+            obj.to_mesh_clear()
+    return names
+
+
+def _tag_flat_meshes(glb_path, names):
+    """Write `extras.pr_flat = 1` into the GLB's JSON chunk for meshes with those names; the viewer
+    then rebuilds per-face normals for them. The exporter itself drops mesh extras for evaluated
+    and instanced meshes, hence the post-processing."""
+    if not names:
+        return
+    with open(glb_path, "rb") as f:
+        data = f.read()
+    json_len, = struct.unpack_from("<I", data, 12)
+    gltf = json.loads(data[20:20 + json_len])
+    for mesh in gltf.get("meshes", []):
+        if mesh.get("name") in names:
+            mesh.setdefault("extras", {})[FLAT_PROP] = 1
+    body = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    body += b" " * (-len(body) % 4)
+    rest = data[20 + json_len:]
+    out = struct.pack("<4sII", b"glTF", 2, 12 + 8 + len(body) + len(rest)) + struct.pack("<I4s", len(body), b"JSON") + body + rest
+    _write_atomic(glb_path, out)
+
+
+def _export_glb(scene, path):
+    """Returns the estimated exported triangle count when decimation kicked in, else None."""
     # the exporter appends ".glb" when missing, so the temp name keeps the extension
     tmp = os.path.join(os.path.dirname(path), "scene.tmp.glb")
-    result = bpy.ops.export_scene.gltf(
-        filepath=tmp,
-        export_format='GLB',
-        export_apply=True,
-        use_visible=True,
-        export_yup=True,
-        export_cameras=False,
-        export_lights=False,
-        export_animations=False,
-        export_image_format='WEBP',
-        export_gn_mesh=True,  # Geometry Nodes instances (chains, pave stones)
-        # Draco: ~10x smaller files; Tailscale Funnel delivers only ~0.4 MB/s
-        export_draco_mesh_compression_enable=True,
-        export_draco_mesh_compression_level=6,
-        export_draco_position_quantization=14,
-        export_draco_normal_quantization=10,
-    )
+    touched, tris = _decimate_for_budget(scene, get_max_triangles())
+    flat_names = _faceted_mesh_names()
+    try:
+        result = bpy.ops.export_scene.gltf(
+            filepath=tmp,
+            export_format='GLB',
+            export_apply=True,
+            use_visible=True,
+            export_yup=True,
+            export_cameras=False,
+            export_lights=False,
+            export_animations=False,
+            export_texcoords=False,  # the viewer uses no textures
+            # flat-shaded sculpts triple the vertex count when normals are exported (3 per triangle);
+            # without them the exporter merges vertices and the viewer rebuilds creased normals
+            export_normals=False,
+            export_image_format='WEBP',
+            export_gn_mesh=True,  # Geometry Nodes instances (chains, pave stones)
+            # Draco: ~10x smaller files; Tailscale Funnel delivers only ~0.4 MB/s
+            export_draco_mesh_compression_enable=True,
+            export_draco_mesh_compression_level=6,
+            export_draco_position_quantization=14,
+            export_draco_normal_quantization=10,
+        )
+    finally:
+        # the scene is never saved here, but the user's stack must come back as it was
+        _remove_temp_decimate(touched)
     if 'FINISHED' not in result or not os.path.isfile(tmp):
         raise RuntimeError("glTF export failed: %s" % result)
+    _tag_flat_meshes(tmp, flat_names)
     os.replace(tmp, path)
+    return tris
 
 
 def _find_view3d():
@@ -396,7 +543,7 @@ def publish(scene, context=None):
     viewer_version = _sync_viewer(project_dir)
 
     glb_path = os.path.join(project_dir, "scene.glb")
-    _export_glb(glb_path)
+    tris = _export_glb(scene, glb_path)
     preview_hash = _render_preview(scene, os.path.join(project_dir, "preview.jpg"))
 
     now = datetime.datetime.now().astimezone()
@@ -436,11 +583,14 @@ def publish(scene, context=None):
         "__PR_DESCRIPTION__": "3D preview with dimensions · %d dimensions · updated %s" % (
             len(dims), now.strftime("%Y-%m-%d %H:%M")),
         "__PR_URL__": url,
+        "__PR_VIEWER__": str(viewer_version or 0),  # cache-busting query for viewer.js
         "__PR_IMAGE__": "%spreview.jpg?v=%s" % (url, preview_hash[:10]) if url and preview_hash else "",
     })
 
     props.publish_status = "%s · %s · %d dims" % (
         now.strftime("%H:%M:%S"), _fmt_size(os.path.getsize(glb_path)), len(dims))
+    if tris is not None:
+        props.publish_status += " · %.1fM tris" % (tris / 1e6)
     props.publish_error = ""
     return project_dir
 

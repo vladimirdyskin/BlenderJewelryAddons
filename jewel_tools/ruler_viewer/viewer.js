@@ -2,14 +2,15 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { DimensionOverlay } from './overlay2d.js';
+import { DimensionOverlay } from './overlay2d.js?v=15';  // keep in step with VIEWER_VERSION
 
-const VIEWER_VERSION = 9; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 15; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
 const PREFS_KEY = 'prettyRuler.material';
@@ -22,6 +23,10 @@ const glCanvas = $('gl');
 const overlayCanvas = $('overlay');
 
 // ---------- Scene ----------
+// Phones have ~1 GB per tab: cap DPR and skip MSAA there, otherwise WebKit reloads the page on big models
+const MOBILE = navigator.maxTouchPoints > 0;
+const MAX_DPR = 2;
+const MSAA = MOBILE ? 0 : 4;
 const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true });
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -66,8 +71,8 @@ const clayMat = new THREE.MeshStandardMaterial({ color: prefs.color, roughness: 
 // Normals+coverage go to normalRT (alpha 0 = background), then one full-screen pass multiplies the linear color
 // buffer by (1 + curvature) and applies tone mapping / sRGB itself, so the background stays exactly as rendered.
 const normalMat = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });
-const normalRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
-const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
+const normalRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA });
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA }));
 const renderPass = new RenderPass(scene, camera);
 const cavityPass = new ShaderPass({
   uniforms: {
@@ -159,7 +164,7 @@ function updateOrthoFrustum() {
 }
 
 function resize() {
-  const w = stage.clientWidth, h = stage.clientHeight, dpr = window.devicePixelRatio || 1;
+  const w = stage.clientWidth, h = stage.clientHeight, dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
   renderer.setPixelRatio(dpr);
   renderer.setSize(w, h, false);
   perspCam.aspect = w / Math.max(1, h);
@@ -190,6 +195,21 @@ loop();
 function modelSphere() {
   if (!state.root) return null;
   return new THREE.Box3().setFromObject(state.root).getBoundingSphere(new THREE.Sphere());
+}
+
+// Orbit/zoom limits and clip planes scaled to the model: with zoomToCursor and no minDistance the
+// camera could be driven into the target, where OrbitControls degenerates and rotation "sticks".
+function setLimits(s) {
+  const r = Math.max(s.radius, 1e-3);
+  controls.minDistance = r * 0.05;
+  controls.maxDistance = r * 40;
+  controls.minZoom = 0.05;
+  controls.maxZoom = 40;
+  for (const cam of [perspCam, orthoCam]) {
+    cam.near = r * 0.005;
+    cam.far = r * 200;
+    cam.updateProjectionMatrix();
+  }
 }
 
 function fit() {
@@ -275,6 +295,43 @@ async function fetchJson(url) {
   return r.json();
 }
 
+// Geometry lives on the GPU only: drop the JS copies once uploaded (halves memory on big models).
+// Bounds are computed first because Box3.setFromObject reads geometry.boundingBox, not the arrays.
+// The publisher exports no normals (merged vertices, 6x smaller files); rebuild them here with a
+// crease angle so gem facets stay sharp. Shared (instanced) geometries are converted once.
+const CREASE_ANGLE = THREE.MathUtils.degToRad(35);
+function rebuildNormals(root) {
+  const done = new Map();
+  root.traverse((o) => {
+    if (!o.isMesh || o.geometry.attributes.normal) return;
+    let g = done.get(o.geometry);
+    if (!g) {
+      if (o.userData.pr_flat) {
+        // faceted in Blender (flat shading or mostly sharp edges, e.g. gems): per-face normals
+        g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+        g.computeVertexNormals();
+      } else {
+        g = toCreasedNormals(o.geometry, CREASE_ANGLE);
+      }
+      done.set(o.geometry, g);
+    }
+    o.geometry = g;
+  });
+  for (const old of done.keys()) old.dispose();
+}
+
+function releaseCpuCopies(root) {
+  const free = function () { this.array = null; };
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const g = o.geometry;
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+    for (const a of Object.values(g.attributes)) a.onUpload(free);
+    if (g.index) g.index.onUpload(free);
+  });
+}
+
 function forceOpaque(root) {
   root.traverse((o) => {
     if (!o.isMesh) return;
@@ -329,9 +386,13 @@ async function loadScene(hash) {
     hideLoading();
   }
   forceOpaque(gltf.scene);
+  rebuildNormals(gltf.scene);
+  releaseCpuCopies(gltf.scene);
   if (state.root) { scene.remove(state.root); disposeTree(state.root); }
   state.root = gltf.scene;
   scene.add(state.root);
+  const sphere = modelSphere();
+  if (sphere && sphere.radius > 0) setLimits(sphere);
   state.sceneHash = hash;
   applyMaterials();
 }
@@ -349,7 +410,13 @@ async function loadDimensions(hash) {
 }
 
 async function applyManifest(m) {
-  if (typeof m.viewerVersion === 'number' && m.viewerVersion > VIEWER_VERSION) $('reload').hidden = false;
+  // An old viewer may not understand new data (e.g. GLBs without normals): reload right away.
+  if (typeof m.viewerVersion === 'number' && m.viewerVersion > VIEWER_VERSION) {
+    $('reload').hidden = false;
+    toast('Viewer updated, reloading…');
+    setTimeout(() => location.reload(), 800);
+    return;
+  }
   const tasks = [];
   if (m.sceneHash !== state.sceneHash) tasks.push(loadScene(m.sceneHash));
   if (m.dimensionsHash !== state.dimensionsHash) tasks.push(loadDimensions(m.dimensionsHash));
