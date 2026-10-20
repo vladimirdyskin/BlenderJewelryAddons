@@ -8,7 +8,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { DimensionOverlay } from './overlay2d.js';
 
-const VIEWER_VERSION = 4; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 6; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
 const PREFS_KEY = 'prettyRuler.material';
@@ -211,7 +211,9 @@ function fit() {
 
 function applyView(v) {
   const cam = v.perspective ? perspCam : orthoCam;
-  cam.up.fromArray(v.up || [0, 1, 0]);
+  // Keep world up: OrbitControls orbits around camera.up, and Blender's turntable
+  // view has no roll, so position + target alone reproduce it.
+  cam.up.set(0, 1, 0);
   cam.position.fromArray(v.position);
   controls.target.fromArray(v.target);
   // Blender fits fovDeg / orthoScale to the larger viewport side; three.js uses the vertical one.

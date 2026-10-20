@@ -8,6 +8,7 @@ this module into the project folder.
 
 import datetime
 import hashlib
+import html
 import json
 import math
 import os
@@ -22,6 +23,7 @@ from bpy.app.handlers import persistent
 from mathutils import Vector
 
 DEFAULT_HOST = "https://mac-mini-2.tail06351a.ts.net"
+DEFAULT_ROOT = "~/Sites/pretty-web"
 VIEWER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ruler_viewer")
 SENSOR_WIDTH = 36.0  # Blender viewport sensor width used for ortho scale / fov
 _VERSION_RE = re.compile(r"<!--\s*pretty-ruler-viewer\s+v(\d+)\s*-->")
@@ -116,7 +118,6 @@ def collect_dimensions(scene):
 
 class PrettyRulerPublishProps(bpy.types.PropertyGroup):
     publish_on_save: bpy.props.BoolProperty(name="Publish on Save", default=False)
-    publish_root: bpy.props.StringProperty(name="Web Root", subtype='DIR_PATH', default="~/Sites/pretty-web")
     project_slug: bpy.props.StringProperty(name="Slug")
     publish_status: bpy.props.StringProperty()
     publish_error: bpy.props.StringProperty()
@@ -127,15 +128,29 @@ class PrettyRulerPublishPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     host: bpy.props.StringProperty(name="Host", default=DEFAULT_HOST)
+    # one web root per machine: the folder the static server publishes
+    publish_root: bpy.props.StringProperty(name="Web Root", subtype='DIR_PATH', default=DEFAULT_ROOT)
 
     def draw(self, context):
         self.layout.prop(self, "host")
+        self.layout.prop(self, "publish_root")
+
+
+def _prefs():
+    addon = bpy.context.preferences.addons.get(__package__)
+    return addon.preferences if addon else None
 
 
 def get_host():
-    addon = bpy.context.preferences.addons.get(__package__)
-    host = addon.preferences.host if addon else DEFAULT_HOST
+    prefs = _prefs()
+    host = prefs.host if prefs else DEFAULT_HOST
     return host.rstrip("/")
+
+
+def get_publish_root():
+    prefs = _prefs()
+    root = prefs.publish_root if prefs and prefs.publish_root else DEFAULT_ROOT
+    return os.path.expanduser(root)
 
 
 def ensure_slug(props):
@@ -176,13 +191,17 @@ def _viewer_version(index_path):
 
 
 def _sync_viewer(project_dir):
-    """Copy viewer files into the project folder when missing or outdated. Returns viewer version."""
+    """Copy viewer scripts into the project folder when missing or outdated. Returns viewer version.
+
+    index.html is not copied here: `_write_index` regenerates it from the template on every publish.
+    """
     dst_index = os.path.join(project_dir, "index.html")
     src_index = os.path.join(VIEWER_DIR, "index.html")
     if not os.path.isfile(src_index):
         print("Pretty Ruler Publish: viewer folder missing (%s), skipping viewer copy" % VIEWER_DIR)
         return _viewer_version(dst_index)
-    names = [n for n in os.listdir(VIEWER_DIR) if os.path.isfile(os.path.join(VIEWER_DIR, n))]
+    names = [n for n in os.listdir(VIEWER_DIR)
+             if n != "index.html" and os.path.isfile(os.path.join(VIEWER_DIR, n))]
     src_ver = _viewer_version(src_index) or 0
     dst_ver = _viewer_version(dst_index)
     outdated = dst_ver is None or src_ver > dst_ver
@@ -192,7 +211,24 @@ def _sync_viewer(project_dir):
             dst = os.path.join(project_dir, n)
             shutil.copyfile(os.path.join(VIEWER_DIR, n), dst + ".tmp")
             os.replace(dst + ".tmp", dst)
-    return _viewer_version(dst_index)
+    return _viewer_version(src_index)
+
+
+def _write_index(project_dir, values):
+    """index.html from the viewer template with the `__PR_*__` placeholders (Open Graph) filled.
+
+    Without an image URL the og:image / twitter:image lines are dropped.
+    """
+    src_index = os.path.join(VIEWER_DIR, "index.html")
+    if not os.path.isfile(src_index):
+        return
+    with open(src_index, encoding="utf-8") as f:
+        text = f.read()
+    if not values["__PR_IMAGE__"]:
+        text = re.sub(r"^.*(?:og:image|twitter:image).*\n", "", text, flags=re.M)
+    for key, val in values.items():
+        text = text.replace(key, html.escape(val, quote=True))
+    _write_atomic(os.path.join(project_dir, "index.html"), text.encode("utf-8"))
 
 
 def _export_glb(path):
@@ -208,6 +244,7 @@ def _export_glb(path):
         export_lights=False,
         export_animations=False,
         export_image_format='WEBP',
+        export_gn_mesh=True,  # Geometry Nodes instances (chains, pave stones)
     )
     if 'FINISHED' not in result or not os.path.isfile(tmp):
         raise RuntimeError("glTF export failed: %s" % result)
@@ -215,22 +252,88 @@ def _export_glb(path):
 
 
 def _find_view3d():
+    """(window, area, region, space) of the first 3D viewport, or None."""
     for win in bpy.context.window_manager.windows:
         for area in win.screen.areas:
             if area.type != 'VIEW_3D':
                 continue
             for space in area.spaces:
                 if space.type == 'VIEW_3D' and space.region_3d is not None:
-                    return space
+                    region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+                    if region is not None:
+                        return win, area, region, space
     return None
+
+
+def _frame_rulers(scene, space, rv3d):
+    """Aim the view at the bounding sphere of the ruler points (that is where the piece is).
+    Returns False when there are no rulers. Viewport extent along the larger side is
+    2 * dist * 36 / lens; dist = r * lens / 12 leaves air around the piece (ruler points
+    usually sit inside the model, so the sphere underestimates it)."""
+    pts = [p for pts in ruler_module(scene).get_ruler_strokes() for p in pts]
+    if not pts:
+        return False
+    lo = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)))
+    hi = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
+    radius = max((hi - lo).length * 0.5, 1.0)
+    rv3d.view_location = (lo + hi) * 0.5
+    rv3d.view_distance = radius * space.lens / 12.0
+    return True
+
+
+def _render_preview(scene, path):
+    """OpenGL render of the 3D viewport into a 1200x630 JPEG (GUI only). Returns its sha1 or None.
+
+    The POST_PIXEL ruler overlay is not part of offscreen viewport renders, so the preview
+    shows the model only. Never raises: a failed preview just means no og:image.
+    """
+    if bpy.app.background:
+        return None
+    found = _find_view3d()
+    if found is None:
+        return None
+    win, area, region, space = found
+    rv3d = space.region_3d
+    r = scene.render
+    ims = r.image_settings
+    saved = (r.resolution_x, r.resolution_y, r.resolution_percentage,
+             ims.file_format, ims.quality, ims.color_mode)
+    # the thumbnail is for clients: no grid/axes/cursor, model framed; the user's view is restored
+    saved_view = (rv3d.view_location.copy(), rv3d.view_rotation.copy(), rv3d.view_distance,
+                  space.overlay.show_overlays)
+    tmp = os.path.join(os.path.dirname(path), "preview.tmp.jpg")
+    try:
+        r.resolution_x, r.resolution_y, r.resolution_percentage = 1200, 630, 100
+        ims.file_format, ims.quality, ims.color_mode = 'JPEG', 85, 'RGB'
+        space.overlay.show_overlays = False
+        # exec path from Python: no render window is opened (checked in Blender 5.2)
+        with bpy.context.temp_override(window=win, area=area, region=region):
+            if not _frame_rulers(scene, space, rv3d):
+                bpy.ops.view3d.view_all(center=False)
+            result = bpy.ops.render.opengl(view_context=True, write_still=False)
+        if 'FINISHED' not in result:
+            raise RuntimeError("render.opengl: %s" % result)
+        bpy.data.images["Render Result"].save_render(filepath=tmp, scene=scene)
+        os.replace(tmp, path)
+    except Exception as e:
+        print("Pretty Ruler Publish: preview skipped - %s: %s" % (type(e).__name__, e))
+        return None
+    finally:
+        # file_format first: color_mode choices depend on it
+        r.resolution_x, r.resolution_y, r.resolution_percentage = saved[:3]
+        ims.file_format, ims.quality, ims.color_mode = saved[3:]
+        rv3d.view_location, rv3d.view_rotation, rv3d.view_distance = saved_view[:3]
+        space.overlay.show_overlays = saved_view[3]
+    return _sha1(path)
 
 
 def _collect_view():
     if bpy.app.background:
         return None
-    space = _find_view3d()
-    if space is None:
+    found = _find_view3d()
+    if found is None:
         return None
+    space = found[3]
     rv3d = space.region_3d
     lens = space.lens
     position = rv3d.view_matrix.inverted().translation
@@ -285,13 +388,14 @@ def publish(scene, context=None):
         raise RuntimeError("Pretty Ruler (Jewelry Suite) is not loaded")
     props = scene.pretty_ruler_publish
     slug = ensure_slug(props)
-    project_dir = os.path.join(os.path.expanduser(bpy.path.abspath(props.publish_root)), slug)
+    project_dir = os.path.join(get_publish_root(), slug)
     os.makedirs(project_dir, exist_ok=True)
 
     viewer_version = _sync_viewer(project_dir)
 
     glb_path = os.path.join(project_dir, "scene.glb")
     _export_glb(glb_path)
+    preview_hash = _render_preview(scene, os.path.join(project_dir, "preview.jpg"))
 
     now = datetime.datetime.now().astimezone()
     saved_at = now.isoformat(timespec="seconds")
@@ -316,9 +420,22 @@ def publish(scene, context=None):
         "sceneHash": _sha1(glb_path),
         "dimensionsHash": _sha1(dims_path),
         "viewerVersion": viewer_version,
+        "previewHash": preview_hash,
     }
     _write_atomic(os.path.join(project_dir, "manifest.json"),
                   json.dumps(manifest, indent=1).encode("utf-8"))
+
+    # link previews (Open Graph): WhatsApp caches per image URL, hence the ?v= cache buster
+    blend_name = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
+    host = get_host()
+    url = "%s/%s/" % (host, slug) if host else ""
+    _write_index(project_dir, {
+        "__PR_TITLE__": re.sub(r"[_-]+", " ", blend_name) if blend_name else "Untitled",
+        "__PR_DESCRIPTION__": "3D preview with dimensions · %d dimensions · updated %s" % (
+            len(dims), now.strftime("%Y-%m-%d %H:%M")),
+        "__PR_URL__": url,
+        "__PR_IMAGE__": "%spreview.jpg?v=%s" % (url, preview_hash[:10]) if url and preview_hash else "",
+    })
 
     props.publish_status = "%s · %s · %d dims" % (
         now.strftime("%H:%M:%S"), _fmt_size(os.path.getsize(glb_path)), len(dims))
@@ -403,7 +520,6 @@ class VIEW3D_PT_pretty_ruler_publish(bpy.types.Panel):
         layout = self.layout
         p = context.scene.pretty_ruler_publish
         layout.prop(p, "publish_on_save")
-        layout.prop(p, "publish_root")
         layout.label(text="Slug: " + (p.project_slug or "(generated on first publish)"))
         row = layout.row(align=True)
         row.operator("pretty_ruler.publish", icon='EXPORT')
