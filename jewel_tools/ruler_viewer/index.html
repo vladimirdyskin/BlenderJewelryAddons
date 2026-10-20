@@ -1,0 +1,92 @@
+<!-- pretty-ruler-viewer v2 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Pretty Ruler</title>
+<style>
+  :root {
+    --bg: #f2f2f2; --bar: #ffffffd9; --fg: #1e1e1e; --muted: #777; --border: #d8d8d8;
+    --btn: #fff; --btn-active: #1e1e1e; --btn-active-fg: #fff; --accent: #2e7d32;
+  }
+  :root[data-theme="dark"] {
+    --bg: #1b1b1b; --bar: #262626d9; --fg: #ececec; --muted: #999; --border: #3a3a3a;
+    --btn: #333; --btn-active: #ececec; --btn-active-fg: #1b1b1b; --accent: #4caf50;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100dvh; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 14px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bar);
+    border-bottom: 1px solid var(--border); flex-wrap: wrap; z-index: 2; }
+  #project { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
+  #updated { color: var(--muted); white-space: nowrap; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: #9e9e9e; flex: none; }
+  #dot.online { background: var(--accent); }
+  .spacer { flex: 1; }
+  button { min-height: 32px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; white-space: nowrap; }
+  button.active { background: var(--btn-active); color: var(--btn-active-fg); border-color: var(--btn-active); }
+  button:disabled { opacity: .4; cursor: default; }
+  #stage { position: relative; flex: 1; min-height: 0; touch-action: none; }
+  #gl, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #overlay { pointer-events: none; }
+  #panel { position: absolute; top: 0; right: 0; bottom: 0; width: 260px; overflow: auto; padding: 10px;
+    background: var(--bar); border-left: 1px solid var(--border); }
+  #panel[hidden] { display: none; }
+  #panel h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; }
+  #dims label { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
+  #dims input { width: 18px; height: 18px; margin: 0; }
+  #dims .type { color: var(--muted); font-size: 12px; margin-left: auto; }
+  #toast { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); padding: 8px 14px;
+    background: #000c; color: #fff; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #reload { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); display: flex; gap: 10px;
+    align-items: center; padding: 6px 12px; background: var(--bar); border: 1px solid var(--border); border-radius: 8px; }
+  #reload[hidden] { display: none; }
+  @media (max-width: 700px) {
+    #bar { gap: 6px; padding: 6px; }
+    button { min-height: 40px; padding: 4px 8px; }
+    #panel { top: auto; left: 0; width: auto; max-height: 45%; border-left: 0; border-top: 1px solid var(--border);
+      border-radius: 12px 12px 0 0; }
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="bar">
+    <span id="project">Pretty Ruler</span>
+    <span id="dot" title="Offline"></span>
+    <span id="updated">—</span>
+    <span class="spacer"></span>
+    <button id="btn-fit" title="Fit model (F)">Fit</button>
+    <button id="btn-home" title="Blender view (H)" disabled>Blender view</button>
+    <button id="btn-dims" title="Dimensions on/off (D)" class="active">Dimensions</button>
+    <button id="btn-proj" title="Ortho / Perspective (O)">Persp</button>
+    <button id="btn-theme" title="Light / Dark theme">Dark</button>
+    <button id="btn-panel" title="Dimension list">List</button>
+  </div>
+  <div id="stage">
+    <canvas id="gl"></canvas>
+    <canvas id="overlay"></canvas>
+    <aside id="panel" hidden>
+      <h3>Dimensions</h3>
+      <div id="dims"></div>
+    </aside>
+    <div id="reload" hidden>
+      <span>Viewer updated</span>
+      <button id="btn-reload">Reload</button>
+    </div>
+    <div id="toast"></div>
+  </div>
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>

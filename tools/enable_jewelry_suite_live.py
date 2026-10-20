@@ -22,6 +22,7 @@ SUITE_SUBMODULES = (
     "metal_union",
     "ui_panel",
     "pretty_ruler",
+    "ruler_publish",
 )
 LEGACY_MODULES = (
     "bl_ext.user_default.parametric_gems",
