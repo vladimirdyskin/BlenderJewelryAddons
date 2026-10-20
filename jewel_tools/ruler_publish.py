@@ -19,7 +19,6 @@ import string
 import sys
 
 import bpy
-from bpy.app.handlers import persistent
 from mathutils import Vector
 
 DEFAULT_HOST = "https://mac-mini-2.tail06351a.ts.net"
@@ -117,7 +116,6 @@ def collect_dimensions(scene):
 # ---------------------------------------------------------------------------
 
 class PrettyRulerPublishProps(bpy.types.PropertyGroup):
-    publish_on_save: bpy.props.BoolProperty(name="Publish on Save", default=False)
     project_slug: bpy.props.StringProperty(name="Slug")
     publish_status: bpy.props.StringProperty()
     publish_error: bpy.props.StringProperty()
@@ -202,15 +200,14 @@ def _sync_viewer(project_dir):
         return _viewer_version(dst_index)
     names = [n for n in os.listdir(VIEWER_DIR)
              if n != "index.html" and os.path.isfile(os.path.join(VIEWER_DIR, n))]
-    src_ver = _viewer_version(src_index) or 0
-    dst_ver = _viewer_version(dst_index)
-    outdated = dst_ver is None or src_ver > dst_ver
-    missing = any(not os.path.isfile(os.path.join(project_dir, n)) for n in names)
-    if outdated or missing:
-        for n in names:
-            dst = os.path.join(project_dir, n)
-            shutil.copyfile(os.path.join(VIEWER_DIR, n), dst + ".tmp")
-            os.replace(dst + ".tmp", dst)
+    # copy whatever differs from the template, regardless of the version number
+    for n in names:
+        src = os.path.join(VIEWER_DIR, n)
+        dst = os.path.join(project_dir, n)
+        if os.path.isfile(dst) and _sha1(dst) == _sha1(src):
+            continue
+        shutil.copyfile(src, dst + ".tmp")
+        os.replace(dst + ".tmp", dst)
     return _viewer_version(src_index)
 
 
@@ -461,18 +458,6 @@ def run_publish(scene):
         _publishing = False
 
 
-@persistent
-def on_save_post(dummy):
-    try:
-        scene = bpy.context.scene
-        props = getattr(scene, "pretty_ruler_publish", None)
-        if props is None or not props.publish_on_save or getattr(scene, "pretty_ruler", None) is None:
-            return
-        run_publish(scene)
-    except Exception as e:
-        print("Pretty Ruler Publish: save_post handler error - %s" % e)
-
-
 # ---------------------------------------------------------------------------
 # Operators / UI
 # ---------------------------------------------------------------------------
@@ -519,7 +504,6 @@ class VIEW3D_PT_pretty_ruler_publish(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         p = context.scene.pretty_ruler_publish
-        layout.prop(p, "publish_on_save")
         layout.label(text="Slug: " + (p.project_slug or "(generated on first publish)"))
         row = layout.row(align=True)
         row.operator("pretty_ruler.publish", icon='EXPORT')
@@ -543,13 +527,9 @@ def register():
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.pretty_ruler_publish = bpy.props.PointerProperty(type=PrettyRulerPublishProps)
-    if on_save_post not in bpy.app.handlers.save_post:
-        bpy.app.handlers.save_post.append(on_save_post)
 
 
 def unregister():
-    if on_save_post in bpy.app.handlers.save_post:
-        bpy.app.handlers.save_post.remove(on_save_post)
     if hasattr(bpy.types.Scene, "pretty_ruler_publish"):
         del bpy.types.Scene.pretty_ruler_publish
     for cls in reversed(_CLASSES):

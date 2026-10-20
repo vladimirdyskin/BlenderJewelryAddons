@@ -1,4 +1,4 @@
-<!-- pretty-ruler-viewer v6 -->
+<!-- pretty-ruler-viewer v8 -->
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -53,6 +53,14 @@
   #toast { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); padding: 8px 14px;
     background: #000c; color: #fff; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.show { opacity: 1; }
+  #loading { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; gap: 10px;
+    align-items: center; padding: 8px 14px; background: var(--bar); border: 1px solid var(--border);
+    border-radius: 8px; font-size: 13px; pointer-events: none; }
+  #loading.first { bottom: auto; top: 50%; transform: translate(-50%, -50%); font-size: 15px; padding: 12px 18px; }
+  #loading[hidden] { display: none; }
+  #loading .spin { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--fg);
+    border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   #reload { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); display: flex; gap: 10px;
     align-items: center; padding: 6px 12px; background: var(--bar); border: 1px solid var(--border); border-radius: 8px; }
   #reload[hidden] { display: none; }
@@ -126,6 +134,7 @@
       <label><input type="checkbox" id="cb-cavity"> Cavity (C)</label>
     </div>
     <div id="toast"></div>
+    <div id="loading" class="first"><span class="spin"></span><span id="loading-text">Loading…</span></div>
   </div>
   <script type="module" src="./viewer.js"></script>
 </body>

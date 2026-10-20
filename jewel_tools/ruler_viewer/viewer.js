@@ -8,7 +8,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { DimensionOverlay } from './overlay2d.js';
 
-const VIEWER_VERSION = 6; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 8; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
 const PREFS_KEY = 'prettyRuler.material';
@@ -176,7 +176,8 @@ function loop() {
   if (!dirty) return;
   dirty = false;
   render();
-  overlay.render(project);
+  // dimensions.json arrives before the first GLB: draw nothing until the model is on screen
+  if (state.root) overlay.render(project);
 }
 loop();
 
@@ -310,7 +311,18 @@ function disposeTree(root) {
 }
 
 async function loadScene(hash) {
-  const gltf = await loader.loadAsync(`scene.glb?v=${encodeURIComponent(hash)}`);
+  const label = state.first ? 'Loading model' : 'Updating model';
+  showLoading(`${label}…`);
+  let gltf;
+  try {
+    gltf = await loader.loadAsync(`scene.glb?v=${encodeURIComponent(hash)}`, (e) => {
+      const mb = (e.loaded / 1048576).toFixed(1);
+      const pct = e.total ? ` ${Math.round(e.loaded / e.total * 100)}%` : '';
+      showLoading(e.total && e.loaded >= e.total ? 'Preparing…' : `${label}…${pct} · ${mb} MB`);
+    });
+  } finally {
+    hideLoading();
+  }
   forceOpaque(gltf.scene);
   if (state.root) { scene.remove(state.root); disposeTree(state.root); }
   state.root = gltf.scene;
@@ -354,8 +366,12 @@ async function applyManifest(m) {
 let pollTimer = null;
 let backoff = POLL_MS;
 
+let polling = false;
+
 async function poll() {
   pollTimer = null;
+  if (polling) return;  // a slow GLB download is still running; the next tick is scheduled below
+  polling = true;
   try {
     await applyManifest(await fetchJson('manifest.json'));
     backoff = POLL_MS;
@@ -364,6 +380,9 @@ async function poll() {
     console.warn('[viewer] update failed:', e);
     backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
     setOnline(false);
+    if (state.first) showLoading('Cannot reach server, retrying…');
+  } finally {
+    polling = false;
   }
   schedulePoll(backoff);
 }
@@ -386,6 +405,18 @@ function setOnline(on) {
 // ---------- UI ----------
 function timeNow() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+
+// Progress pill: centered until the first model is on screen, then at the bottom.
+function showLoading(text) {
+  const el = $('loading');
+  el.classList.toggle('first', state.first);
+  $('loading-text').textContent = text;
+  el.hidden = false;
+}
+
+function hideLoading() {
+  $('loading').hidden = true;
 }
 
 let toastTimer = null;
