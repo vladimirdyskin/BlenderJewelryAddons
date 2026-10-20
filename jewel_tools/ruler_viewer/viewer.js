@@ -1,6 +1,7 @@
 // Pretty Ruler Web viewer: scene, loading, polling, UI. Dimensions are drawn by overlay2d.js.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -8,7 +9,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { DimensionOverlay } from './overlay2d.js';
 
-const VIEWER_VERSION = 8; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 9; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
 const PREFS_KEY = 'prettyRuler.material';
@@ -47,6 +48,10 @@ controls.addEventListener('change', markDirty);
 
 const overlay = new DimensionOverlay(overlayCanvas);
 const loader = new GLTFLoader();
+// Draco-compressed GLBs (the publisher enables it); the decoder is fetched on first use
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/libs/draco/gltf/');
+loader.setDRACOLoader(draco);
 
 // ---------- Material prefs (persisted) ----------
 const prefs = { clay: true, color: '#7a2e2e', cavityClay: true, cavityBlender: false };

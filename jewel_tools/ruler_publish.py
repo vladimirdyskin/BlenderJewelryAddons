@@ -242,6 +242,11 @@ def _export_glb(path):
         export_animations=False,
         export_image_format='WEBP',
         export_gn_mesh=True,  # Geometry Nodes instances (chains, pave stones)
+        # Draco: ~10x smaller files; Tailscale Funnel delivers only ~0.4 MB/s
+        export_draco_mesh_compression_enable=True,
+        export_draco_mesh_compression_level=6,
+        export_draco_position_quantization=14,
+        export_draco_normal_quantization=10,
     )
     if 'FINISHED' not in result or not os.path.isfile(tmp):
         raise RuntimeError("glTF export failed: %s" % result)
