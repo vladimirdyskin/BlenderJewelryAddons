@@ -41,6 +41,8 @@ _VERSION_RE = re.compile(r"<!--\s*pretty-ruler-viewer\s+v(\d+)\s*-->")
 
 _publishing = False
 UPLOAD_TIMEOUT = 120  # seconds of socket silence before an upload is given up
+# Cloudflare's Browser Integrity Check answers 403 "error code: 1010" to the default "Python-urllib/3.x"
+USER_AGENT = "PrettyRulerPublish/1.0 (Blender %s)" % bpy.app.version_string
 _upload_state = None  # dict shared with the upload thread; only the timer writes Blender data
 
 
@@ -655,6 +657,7 @@ def _request_error(e):
     """Readable text for a failed request to the upload API."""
     if isinstance(e, urllib.error.HTTPError):
         known = {401: "wrong login or password",
+                 403: "blocked by Cloudflare or the server (403)",
                  404: "no upload service at this address",
                  413: "project too large for the server",
                  429: "too many wrong passwords, login blocked for 15 minutes"}
@@ -698,6 +701,7 @@ def _upload_worker(url, auth, body, state):
     try:
         req = urllib.request.Request(url, data=_ProgressBody(body, state), method="PUT", headers={
             "Authorization": auth,
+            "User-Agent": USER_AGENT,
             "Content-Type": "application/zip",
             "Content-Length": str(len(body)),  # else urllib switches to chunked encoding
         })
@@ -826,7 +830,8 @@ class PRETTYRULER_OT_test_connection(bpy.types.Operator):
         if prefs is None:
             self.report({'ERROR'}, "Add-on preferences not found")
             return {'CANCELLED'}
-        req = urllib.request.Request(get_host() + "/api/ping", headers={"Authorization": _auth_header(prefs)})
+        req = urllib.request.Request(get_host() + "/api/ping", headers={
+            "Authorization": _auth_header(prefs), "User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 r.read()
