@@ -8,12 +8,11 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { DimensionOverlay } from './overlay2d.js?v=15';  // keep in step with VIEWER_VERSION
+import { DimensionOverlay } from './overlay2d.js?v=16';  // keep in step with VIEWER_VERSION
 
-const VIEWER_VERSION = 15; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 16; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
-const PREFS_KEY = 'prettyRuler.material';
 const CAVITY_RADIUS_PX = 1.5; // sample offset in CSS px (scaled by DPR via the buffer size)
 const CAVITY_RIDGE = 1.0, CAVITY_VALLEY = 1.0; // Blender workbench curvature factors
 
@@ -58,10 +57,8 @@ const draco = new DRACOLoader();
 draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/libs/draco/gltf/');
 loader.setDRACOLoader(draco);
 
-// ---------- Material prefs (persisted) ----------
+// ---------- Material prefs (per visit; the author's defaults come with dimensions.json "display") ----------
 const prefs = { clay: true, color: '#7a2e2e', cavityClay: true, cavityBlender: false };
-try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREFS_KEY)) || {}); } catch { /* ignore */ }
-function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* ignore */ } }
 function cavityOn() { return prefs.clay ? prefs.cavityClay : prefs.cavityBlender; }
 
 // Shared matte clay material (Blender sculpt-mode look); originals are kept in mesh.userData.originalMaterial.
@@ -139,6 +136,7 @@ const state = {
   first: true,
   overrides: new Map(), // id -> enabled, user changes in the checkbox list
   dimsVisible: true,
+  display: undefined, // JSON of the author's defaults applied last
 };
 
 let dirty = true;
@@ -402,6 +400,12 @@ async function loadDimensions(hash) {
   if (data.version !== 1) toast(`dimensions.json version ${data.version} (expected 1)`, 4000);
   state.dims = data;
   state.dimensionsHash = hash;
+  // the author's defaults: on first load and whenever the author changes them, not on every republish
+  const display = data.display ? JSON.stringify(data.display) : null;
+  if (display !== state.display) {
+    state.display = display;
+    if (data.display) applyDisplay(data.display);
+  }
   overlay.setData(data);
   for (const [id, on] of state.overrides) overlay.setEnabled(id, on);
   buildDimList();
@@ -546,11 +550,10 @@ function setTheme(dark) {
 }
 
 // ---------- Material popover ----------
-function setClay(on) { prefs.clay = on; savePrefs(); applyMaterials(); updateMatUI(); }
-function setColor(hex) { prefs.color = hex; clayMat.color.set(hex); savePrefs(); updateMatUI(); markDirty(); }
+function setClay(on) { prefs.clay = on; applyMaterials(); updateMatUI(); }
+function setColor(hex) { prefs.color = hex; clayMat.color.set(hex); updateMatUI(); markDirty(); }
 function toggleCavity() {
   if (prefs.clay) prefs.cavityClay = !prefs.cavityClay; else prefs.cavityBlender = !prefs.cavityBlender;
-  savePrefs();
   updateMatUI();
   markDirty();
 }
@@ -561,6 +564,15 @@ function updateMatUI() {
   for (const b of document.querySelectorAll('.sw')) b.classList.toggle('active', b.dataset.color === prefs.color);
   $('mat-color').value = prefs.color;
   $('cb-cavity').checked = cavityOn();
+}
+function applyDisplay(d) {
+  prefs.clay = d.material !== 'blender';
+  if (typeof d.clayColor === 'string') { prefs.color = d.clayColor; clayMat.color.set(d.clayColor); }
+  if (typeof d.cavity === 'boolean') {
+    if (prefs.clay) prefs.cavityClay = d.cavity; else prefs.cavityBlender = d.cavity;
+  }
+  applyMaterials();
+  updateMatUI();
 }
 function toggleMatPopover(show = $('matpop').hidden) { $('matpop').hidden = !show; updateMatUI(); }
 

@@ -124,6 +124,16 @@ class PrettyRulerPublishProps(bpy.types.PropertyGroup):
     project_slug: bpy.props.StringProperty(name="Slug")
     publish_status: bpy.props.StringProperty()
     publish_error: bpy.props.StringProperty()
+    # what the web page shows on load (the client can switch during the visit, nothing is remembered)
+    view_material: bpy.props.EnumProperty(
+        name="Material",
+        items=(('CLAY', "Clay", "Matte clay override"),
+               ('BLENDER', "Blender", "Materials from the GLB")),
+        default='CLAY')
+    clay_color: bpy.props.FloatVectorProperty(
+        name="Clay Color", subtype='COLOR_GAMMA', size=3, min=0.0, max=1.0,
+        default=(0x7a / 255, 0x2e / 255, 0x2e / 255))
+    cavity: bpy.props.BoolProperty(name="Cavity", default=True)
 
 
 class PrettyRulerPublishPreferences(bpy.types.AddonPreferences):
@@ -387,7 +397,9 @@ def _export_glb(scene, path):
             # Draco: ~10x smaller files; Tailscale Funnel delivers only ~0.4 MB/s
             export_draco_mesh_compression_enable=True,
             export_draco_mesh_compression_level=6,
-            export_draco_position_quantization=14,
+            # 14 bits left visible bands in the rebuilt normals (up to ~27 deg on a mesh with
+            # object scale 16 on X, 3-6 deg on rings); 18 bits keeps it under ~2 deg, GLB ~1.8x
+            export_draco_position_quantization=18,
             export_draco_normal_quantization=10,
         )
     finally:
@@ -525,6 +537,15 @@ def _collect_style(rp):
     }
 
 
+def _collect_display(props):
+    """Material the viewer shows on page load."""
+    return {
+        "material": "clay" if props.view_material == 'CLAY' else "blender",
+        "clayColor": "#%02x%02x%02x" % tuple(round(c * 255) for c in props.clay_color),
+        "cavity": props.cavity,
+    }
+
+
 def _fmt_size(n):
     if n >= 1 << 20:
         return "%.1f MB" % (n / (1 << 20))
@@ -556,6 +577,7 @@ def publish(scene, context=None):
         "coordinateSpace": "gltf-y-up",
         "view": _collect_view(),
         "style": _collect_style(scene.pretty_ruler),
+        "display": _collect_display(props),
         "dimensions": dims,
     }
     dims_path = os.path.join(project_dir, "dimensions.json")
@@ -667,6 +689,14 @@ class VIEW3D_PT_pretty_ruler_publish(bpy.types.Panel):
             layout.label(text=p.publish_status)
         if p.publish_error:
             layout.label(text=p.publish_error, icon='ERROR')
+
+        box = layout.box()
+        box.label(text="Viewer Defaults")
+        box.row().prop(p, "view_material", expand=True)
+        row = box.row()
+        row.enabled = p.view_material == 'CLAY'
+        row.prop(p, "clay_color")
+        box.prop(p, "cavity")
 
 
 _CLASSES = (
