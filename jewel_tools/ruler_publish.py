@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pretty Ruler Publish: GLB + dimensions.json + manifest.json into a static web folder.
+"""Pretty Ruler Publish: GLB + dimensions.json + manifest.json into a static web folder,
+optionally uploaded to the server (server/nuc/api.py in BlenderWebPreview) as one zip.
 
 Depends on Pretty Ruler (`Scene.pretty_ruler`, registered earlier in the suite); owns
 `Scene.pretty_ruler_publish`. The viewer files are copied from `ruler_viewer/` next to
 this module into the project folder.
 """
 
+import base64
 import datetime
 import hashlib
 import html
+import io
 import json
 import math
 import os
@@ -18,6 +21,10 @@ import shutil
 import string
 import struct
 import sys
+import threading
+import urllib.error
+import urllib.request
+import zipfile
 
 import bpy
 from mathutils import Vector
@@ -33,6 +40,8 @@ SENSOR_WIDTH = 36.0  # Blender viewport sensor width used for ortho scale / fov
 _VERSION_RE = re.compile(r"<!--\s*pretty-ruler-viewer\s+v(\d+)\s*-->")
 
 _publishing = False
+UPLOAD_TIMEOUT = 120  # seconds of socket silence before an upload is given up
+_upload_state = None  # dict shared with the upload thread; only the timer writes Blender data
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +149,16 @@ class PrettyRulerPublishPreferences(bpy.types.AddonPreferences):
     # inside the suite __package__ is the extension id, so this is the suite's preferences entry
     bl_idname = __package__
 
-    host: bpy.props.StringProperty(name="Host", default=DEFAULT_HOST)
+    # the property keeps its old name "host" so the saved address survives
+    host: bpy.props.StringProperty(
+        name="Server URL", default=DEFAULT_HOST,
+        description="Address of the viewer site: links are <Server URL>/<slug>/, uploads go to <Server URL>/api/")
+    upload: bpy.props.BoolProperty(
+        name="Upload to Server", default=False,
+        description="After building the project in the Web Root, send it to the server")
+    login: bpy.props.StringProperty(name="Login")
+    # stored as plain text in userpref.blend, like every add-on preference
+    password: bpy.props.StringProperty(name="Password", subtype='PASSWORD')
     # one web root per machine: the folder the static server publishes
     publish_root: bpy.props.StringProperty(name="Web Root", subtype='DIR_PATH', default=DEFAULT_ROOT)
     max_triangles: bpy.props.IntProperty(
@@ -148,9 +166,16 @@ class PrettyRulerPublishPreferences(bpy.types.AddonPreferences):
         description="Decimate heavy meshes on publish to stay under this total (0 = unlimited)")
 
     def draw(self, context):
-        self.layout.prop(self, "host")
-        self.layout.prop(self, "publish_root")
-        self.layout.prop(self, "max_triangles")
+        layout = self.layout
+        layout.prop(self, "host")
+        layout.prop(self, "upload")
+        col = layout.column()
+        col.enabled = self.upload
+        col.prop(self, "login")
+        col.prop(self, "password")
+        col.operator("pretty_ruler.test_connection", icon='URL')
+        layout.prop(self, "publish_root")
+        layout.prop(self, "max_triangles")
 
 
 def _prefs():
@@ -617,6 +642,124 @@ def publish(scene, context=None):
     return project_dir
 
 
+# ---------------------------------------------------------------------------
+# Upload: one zip per publish, PUT from a worker thread; a timer shows the progress
+# ---------------------------------------------------------------------------
+
+def _auth_header(prefs):
+    pair = "%s:%s" % (prefs.login, prefs.password)
+    return "Basic " + base64.b64encode(pair.encode("utf-8")).decode("ascii")
+
+
+def _request_error(e):
+    """Readable text for a failed request to the upload API."""
+    if isinstance(e, urllib.error.HTTPError):
+        known = {401: "wrong login or password",
+                 404: "no upload service at this address",
+                 413: "project too large for the server",
+                 429: "too many wrong passwords, login blocked for 15 minutes"}
+        if e.code in known:
+            return known[e.code]
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        return "server answered %d %s" % (e.code, detail or e.reason)
+    if isinstance(e, urllib.error.URLError):
+        return "server unreachable (%s)" % e.reason
+    return "%s: %s" % (type(e).__name__, e)
+
+
+def _zip_project(project_dir):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in sorted(os.listdir(project_dir)):
+            path = os.path.join(project_dir, name)
+            # skip .DS_Store and temp files of an interrupted export
+            if os.path.isfile(path) and not name.startswith(".") and ".tmp" not in name:
+                z.write(path, name)
+    return buf.getvalue()
+
+
+class _ProgressBody:
+    """Request body that http.client reads block by block; counts the bytes sent."""
+
+    def __init__(self, data, state):
+        self._buf = io.BytesIO(data)
+        self._state = state
+
+    def read(self, size=-1):
+        chunk = self._buf.read(size)
+        self._state["sent"] += len(chunk)
+        return chunk
+
+
+def _upload_worker(url, auth, body, state):
+    try:
+        req = urllib.request.Request(url, data=_ProgressBody(body, state), method="PUT", headers={
+            "Authorization": auth,
+            "Content-Type": "application/zip",
+            "Content-Length": str(len(body)),  # else urllib switches to chunked encoding
+        })
+        with urllib.request.urlopen(req, timeout=UPLOAD_TIMEOUT) as r:
+            state["url"] = json.loads(r.read()).get("url", "")
+    except Exception as e:
+        state["error"] = _request_error(e)
+    finally:
+        state["done"] = True
+
+
+def _redraw_view3d():
+    for win in bpy.context.window_manager.windows:
+        for area in win.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+def _upload_tick():
+    global _upload_state
+    st = _upload_state
+    if st is None:
+        return None
+    scene = bpy.data.scenes.get(st["scene"])
+    props = getattr(scene, "pretty_ruler_publish", None) if scene is not None else None
+    if props is not None:
+        if not st["done"]:
+            pct = 100 * st["sent"] // max(1, st["total"])
+            props.publish_status = "%s · uploading %d%% of %s" % (st["base"], pct, _fmt_size(st["total"]))
+        elif st["error"]:
+            props.publish_status = st["base"] + " · not uploaded"
+            props.publish_error = "Upload failed: " + st["error"]
+        else:
+            props.publish_status = st["base"] + " · uploaded"
+    try:
+        _redraw_view3d()
+    except Exception:
+        pass
+    if st["done"]:
+        print("Pretty Ruler Publish: upload %s" % ("failed - " + st["error"] if st["error"] else "done " + st["url"]))
+        _upload_state = None
+        return None
+    return 0.25
+
+
+def start_upload(scene, project_dir):
+    """Send the project folder to <Server URL>/api/projects/<slug> in the background."""
+    global _upload_state
+    prefs = _prefs()
+    props = scene.pretty_ruler_publish
+    if not prefs.login or not prefs.password:
+        props.publish_error = "Upload: set Login and Password in the add-on preferences"
+        return
+    body = _zip_project(project_dir)
+    state = {"scene": scene.name, "base": props.publish_status, "sent": 0, "total": len(body),
+             "done": False, "error": "", "url": ""}
+    _upload_state = state
+    url = "%s/api/projects/%s" % (get_host(), os.path.basename(project_dir))
+    threading.Thread(target=_upload_worker, args=(url, _auth_header(prefs), body, state), daemon=True).start()
+    bpy.app.timers.register(_upload_tick, first_interval=0.1)
+
+
 def run_publish(scene):
     """publish() with reentrancy guard and error capture into props. Returns error string or ''."""
     global _publishing
@@ -624,7 +767,10 @@ def run_publish(scene):
         return ""
     _publishing = True
     try:
-        publish(scene)
+        project_dir = publish(scene)
+        prefs = _prefs()
+        if prefs is not None and prefs.upload:
+            start_upload(scene, project_dir)
         return ""
     except Exception as e:
         msg = "%s: %s" % (type(e).__name__, e)
@@ -642,7 +788,11 @@ def run_publish(scene):
 class PRETTYRULER_OT_publish(bpy.types.Operator):
     bl_idname = "pretty_ruler.publish"
     bl_label = "Publish Now"
-    bl_description = "Export GLB, dimensions and manifest to the web folder"
+    bl_description = "Export GLB, dimensions and manifest to the web folder (and upload them when enabled)"
+
+    @classmethod
+    def poll(cls, context):
+        return _upload_state is None  # one upload at a time
 
     def execute(self, context):
         err = run_publish(context.scene)
@@ -663,6 +813,27 @@ class PRETTYRULER_OT_copy_link(bpy.types.Operator):
         link = "%s/%s/" % (get_host(), slug)
         context.window_manager.clipboard = link
         self.report({'INFO'}, link)
+        return {'FINISHED'}
+
+
+class PRETTYRULER_OT_test_connection(bpy.types.Operator):
+    bl_idname = "pretty_ruler.test_connection"
+    bl_label = "Test Connection"
+    bl_description = "Check the server address, login and password"
+
+    def execute(self, context):
+        prefs = _prefs()
+        if prefs is None:
+            self.report({'ERROR'}, "Add-on preferences not found")
+            return {'CANCELLED'}
+        req = urllib.request.Request(get_host() + "/api/ping", headers={"Authorization": _auth_header(prefs)})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                r.read()
+        except Exception as e:
+            self.report({'ERROR'}, "Connection failed: " + _request_error(e))
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Connected to %s as %s" % (get_host(), prefs.login))
         return {'FINISHED'}
 
 
@@ -704,6 +875,7 @@ _CLASSES = (
     PrettyRulerPublishPreferences,
     PRETTYRULER_OT_publish,
     PRETTYRULER_OT_copy_link,
+    PRETTYRULER_OT_test_connection,
     VIEW3D_PT_pretty_ruler_publish,
 )
 
@@ -715,6 +887,8 @@ def register():
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_upload_tick):
+        bpy.app.timers.unregister(_upload_tick)
     if hasattr(bpy.types.Scene, "pretty_ruler_publish"):
         del bpy.types.Scene.pretty_ruler_publish
     for cls in reversed(_CLASSES):
