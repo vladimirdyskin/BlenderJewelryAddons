@@ -8,9 +8,9 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { DimensionOverlay } from './overlay2d.js?v=16';  // keep in step with VIEWER_VERSION
+import { DimensionOverlay } from './overlay2d.js?v=17';  // keep in step with VIEWER_VERSION
 
-const VIEWER_VERSION = 16; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 17; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
 const CAVITY_RADIUS_PX = 1.5; // sample offset in CSS px (scaled by DPR via the buffer size)
@@ -338,6 +338,9 @@ function forceOpaque(root) {
       m.transparent = false;
       m.opacity = 1;
       m.depthWrite = true;
+      // GLTFLoader turns flat shading on for primitives without NORMAL (the publisher exports none);
+      // rebuildNormals() supplies them, and faceted meshes get per-face normals there
+      m.flatShading = false;
       if ('transmission' in m) m.transmission = 0;
       // Glossy BSDF exports without PBR data -> glTF defaults (metallic 1, roughness 1) look matte; make it metal.
       if (m.isMeshStandardMaterial && !m.roughnessMap && m.metalness >= 0.99 && m.roughness >= 0.99) m.roughness = 0.25;
