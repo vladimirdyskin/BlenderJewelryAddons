@@ -12,6 +12,10 @@ My_Gems_Curve — только камни по кривой, с зеркалом
         встают на концы, поэтому на оси всегда камень, а зазор между ними подгоняется.
         Spacing — минимальный зазор вдоль кривой.
     Curve to Points: X камня = касательная, Z = нормаль с учётом Tilt.
+    Свободный конец ряда: касательная берётся с самой кривой. У ломаной между камнями на конце
+        это хорда к соседу, и на изгибе крайний камень разворачивается на половину угла.
+        Конец на оси зеркала не трогаем: X задаёт ось, а Z по хорде не зависит от того,
+        как последний участок кривой подходит к оси.
     Зеркало (подгруппа Gems Curve Mirror) по очереди X, Y, Z — на точках, а не на инстансах.
     Один Instance on Points.
 
@@ -26,6 +30,7 @@ My_Gems_Curve — только камни по кривой, с зеркалом
     gem_order — порядок вдоль ряда. Отражается относительно того конца ряда, что ближе к оси,
                 поэтому обход идёт непрерывно через ось и не разворачивается.
     gem_up    — ось Z камня (Instance Rotation не годится: у копий отрицательный масштаб).
+    gem_along — ось X камня, по ней встают концевые крапана.
     gem_r     — половина длины камня вдоль кривой.
     gem_mirror — -1 у зеркальной копии: её ход по кривой обратный, начало ряда стало концом.
 
@@ -43,6 +48,7 @@ MIRROR_GROUP = "Gems Curve Mirror"
 
 ATTR_ORDER = "gem_order"
 ATTR_UP = "gem_up"
+ATTR_ALONG = "gem_along"
 ATTR_R = "gem_r"
 ATTR_S = "gem_mirror"  # знак Scale X: -1 у зеркальной копии
 ATTR_X = "_gc_x"       # ось X камня
@@ -374,10 +380,37 @@ def build_group():
     tilt = b.node("GeometryNodeSetCurveTilt", 3840, 200)
     b.link(coarse.outputs["Curve"], tilt.inputs["Curve"])
     b.link(b.math("ADD", b.g("Tilt"), ctilt.outputs[0], 3840, -60), tilt.inputs["Tilt"])
-    c2p = b.node("GeometryNodeCurveToPoints", 4040, 200, mode="EVALUATED")
-    b.link(tilt.outputs["Curve"], c2p.inputs["Curve"])
-    pts = b.store(c2p.outputs["Points"], ATTR_X, "FLOAT_VECTOR", c2p.outputs["Tangent"], 4240, 200)
-    pts = b.store(pts, ATTR_Z, "FLOAT_VECTOR", c2p.outputs["Normal"], 4440, 200)
+    layout = b.frame
+
+    # --- свободные концы ряда: касательная кривой вместо хорды к соседу ---
+    b.section("Free Ends")
+    ends = b.node("GeometryNodeCurveEndpointSelection", 3100, -320)
+    pos = b.node("GeometryNodeInputPosition", 3100, -500).outputs[0]
+    off = b.vmath("SCALE", b.vmath("SUBTRACT", (1.0, 1.0, 1.0), mask.outputs["Vector"], 3100, -640), 1e6, 3280, -640)
+    far = b.vmath("ADD", b.vmath("ABSOLUTE", pos, None, 3280, -500), off, 3460, -500)
+    fs = b.node("ShaderNodeSeparateXYZ", 3640, -500)
+    b.link(far, fs.inputs[0])
+    nearest = b.math("MINIMUM", b.math("MINIMUM", fs.outputs["X"], fs.outputs["Y"], 3820, -500), fs.outputs["Z"], 4000, -500)
+    free = b.boolean("AND", ends.outputs["Selection"],
+                     b.cmp("GREATER_EQUAL", nearest, radius, 4180, -500), 4360, -320)
+    param = b.node("GeometryNodeSplineParameter", 3460, -760)
+    of_point = b.node("GeometryNodeCurveOfPoint", 3460, -920)
+    sample = b.node("GeometryNodeSampleCurve", 3820, -760, mode="FACTOR")
+    b.link(opened.outputs["Geometry"], sample.inputs["Curves"])
+    b.link(param.outputs["Factor"], sample.inputs["Factor"])
+    b.link(of_point.outputs["Curve Index"], sample.inputs["Curve Index"])
+    tangent = b.node("GeometryNodeInputTangent", 4180, -760).outputs[0]
+    axis_x = b.switch("VECTOR", free, tangent, sample.outputs["Tangent"], 4360, -760)
+
+    b.frame = layout
+    curve = b.store(tilt.outputs["Curve"], ATTR_X, "FLOAT_VECTOR", axis_x, 4040, 200)
+    c2p = b.node("GeometryNodeCurveToPoints", 4240, 200, mode="EVALUATED")
+    b.link(curve, c2p.inputs["Curve"])
+    # Z остаётся нормалью ломаной, только перпендикулярно новому X: крен ряда не меняется
+    vx = b.named(ATTR_X, "FLOAT_VECTOR", 4240, -60)
+    along = b.vmath("SCALE", vx, b.vmath("DOT_PRODUCT", c2p.outputs["Normal"], vx, 4420, -60), 4600, -60)
+    z = b.vmath("NORMALIZE", b.vmath("SUBTRACT", c2p.outputs["Normal"], along, 4780, -60), None, 4960, -60)
+    pts = b.store(c2p.outputs["Points"], ATTR_Z, "FLOAT_VECTOR", z, 4440, 200)
     pts = b.store(pts, ATTR_S, "FLOAT", 1.0, 4640, 200)
     index = b.node("GeometryNodeInputIndex", 4640, -60)
     pts = b.store(pts, ATTR_ORDER, "FLOAT", index.outputs[0], 4840, 200)
@@ -399,6 +432,7 @@ def build_group():
     b.section("Stones")
     vz = b.named(ATTR_Z, "FLOAT_VECTOR", 5800, -60)
     pts = b.store(pts, ATTR_UP, "FLOAT_VECTOR", vz, 6000, 200)
+    pts = b.store(pts, ATTR_ALONG, "FLOAT_VECTOR", b.named(ATTR_X, "FLOAT_VECTOR", 5800, -240), 6100, 200)
     pts = b.store(pts, ATTR_R, "FLOAT", radius, 6200, 200)
     rot = b.node("FunctionNodeAxesToRotation", 6200, -60, primary_axis="Z", secondary_axis="X")
     b.link(vz, rot.inputs["Primary Axis"])

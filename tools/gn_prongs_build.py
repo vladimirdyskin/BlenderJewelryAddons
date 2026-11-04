@@ -1,7 +1,7 @@
 """
 My_Prongs — крапана между камнями. Второй модификатор после My_Gems_Curve.
 
-На вход приходят инстансы камней с атрибутами gem_order, gem_up, gem_r
+На вход приходят инстансы камней с атрибутами gem_order, gem_up, gem_along, gem_r
 (см. tools/gn_gems_curve_build.py). На выход — те же камни плюс инстансы крапанов.
 
 Схема:
@@ -17,7 +17,8 @@ My_Prongs — крапана между камнями. Второй модиф�
     и крапана на концах ставятся симметрично обеим половинам.
 
 Место в зазоре: P + dir * (r + gap / 2), учитывает разный размер соседних камней.
-Конец ряда: P + dir * (r + Start/End Offset), dir — продолжение ряда.
+Конец ряда: P + dir * (r + Start/End Offset), dir — ось X камня наружу от соседа.
+Хорда к соседу не годится: на изгибе крайний камень к ней наклонён, и крапан ушёл бы с его плоскости.
 Up — среднее осей Z двух камней, T — ход вдоль ряда, Across = Up x T.
 
 Внутрь и наружу: Across у всех зазоров смотрит в одну сторону относительно хода по ряду.
@@ -40,6 +41,7 @@ GROUP_NAME = "My_Prongs"
 
 ATTR_ORDER = "gem_order"
 ATTR_UP = "gem_up"
+ATTR_ALONG = "gem_along"
 ATTR_R = "gem_r"
 ATTR_MIRROR = "gem_mirror"
 
@@ -290,9 +292,11 @@ def build_group():
     b.link(dup.outputs["Geometry"], cut.inputs["Geometry"])
     b.link(b.boolean("NOT", keep, None, 3700, -520), cut.inputs["Selection"])
 
-    # направление от камня: к соседу или, на конце ряда, продолжение ряда
+    # направление от камня: к соседу или, на конце ряда, ось X камня наружу от соседа
     to_nb = b.vmath("NORMALIZE", b.vmath("SUBTRACT", nb_p, pos, 3140, 200), None, 3320, 200)
-    away = b.vmath("NORMALIZE", b.vmath("SUBTRACT", pos, ot_p, 3140, 20), None, 3320, 20)
+    stone_x = b.named(ATTR_ALONG, "FLOAT_VECTOR", 2920, 400).outputs["Attribute"]
+    outside = b.vmath("DOT_PRODUCT", stone_x, b.vmath("SUBTRACT", pos, ot_p, 3140, 20), 3320, 20)
+    away = b.vmath("SCALE", stone_x, b.math("SIGN", outside, None, 3500, 20), 3680, 20)
     dirv = b.switch("VECTOR", ok, away, to_nb, 3500, 200)
 
     gap = b.math("SUBTRACT", b.vmath("DISTANCE", nb_p, pos, 3140, -160), rad, 3320, -160)
