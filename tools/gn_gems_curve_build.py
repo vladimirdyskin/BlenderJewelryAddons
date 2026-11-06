@@ -11,6 +11,9 @@ My_Gems_Curve — только камни по кривой, с зеркалом
     Resample (Count): n - 1 = floor(L / шаг), шаг = длина камня + Spacing. Крайние камни
         встают на концы, поэтому на оси всегда камень, а зазор между ними подгоняется.
         Spacing — минимальный зазор вдоль кривой.
+    Замкнутый ряд (циклическая кривая, Trim Curve = 0, зеркала нет): Trim размыкает кривую
+        и оставляет оба конца в одной точке, поэтому режем через шов и замыкаем обратно.
+        Камней столько же, сколько зазоров, Offset Curve поворачивает весь ряд.
     Curve to Points: X камня = касательная, Z = нормаль с учётом Tilt.
     Свободный конец ряда: касательная берётся с самой кривой. У ломаной между камнями на конце
         это хорда к соседу, и на изгибе крайний камень разворачивается на половину угла.
@@ -18,6 +21,8 @@ My_Gems_Curve — только камни по кривой, с зеркалом
         как последний участок кривой подходит к оси.
     Зеркало (подгруппа Gems Curve Mirror) по очереди X, Y, Z — на точках, а не на инстансах.
     Один Instance on Points.
+    Realize: камни становятся мешем, отражённым переворачиваются грани. Включать, только если
+        дальше нет My_Prongs: он находит камни по инстансам, без них крапанов не будет.
 
 Камень, пересекающий ось (|d| < половины длины камня), копии не получает и ставится ровно
 на ось: Z — среднее с отражением, X — поперёк оси. Копия остальных камней — точное отражение:
@@ -35,7 +40,8 @@ My_Gems_Curve — только камни по кривой, с зеркалом
     gem_mirror — -1 у зеркальной копии: её ход по кривой обратный, начало ряда стало концом.
 
 Ограничение: замкнутая кривая с включённым зеркалом режется в порядке точек, шов должен быть
-на отрезаемой стороне. Для зеркала нужна половина контура.
+на отрезаемой стороне. Для зеркала нужна половина контура. Замкнутая кривая с Trim Curve > 0 —
+открытый ряд.
 
 Интерфейс: сокеты только добавляются, если их нет — повторный запуск скрипта
 не сбрасывает значения на модификаторах. Узлы пересобираются целиком.
@@ -55,10 +61,12 @@ ATTR_X = "_gc_x"       # ось X камня
 ATTR_Z = "_gc_z"       # ось Z камня
 
 CUT_STEP = 0.002     # шаг мелкого Resample, доля шага камней: ошибка реза меньше 0.2% шага
+SEAM_GAP = 1e-4      # замкнутый ряд режется чуть раньше шва: при равных концах Trim даёт точку
 
 # (имя, тип, default, min, max, панель, subtype)
 SOCKETS = [
     ("Diam", "NodeSocketObject", None, None, None, None, None),
+    ("Realize", "NodeSocketBool", False, None, None, None, None),
     ("Gem Size", "NodeSocketFloat", 1.0, 0.01, None, "Stone", None),
     ("Spacing", "NodeSocketFloat", 0.1, None, None, "Stone", None),
     ("Trim Curve", "NodeSocketFloat", 0.0, None, None, "Stone", None),
@@ -102,6 +110,8 @@ def ensure_interface(ng):
                 for ident, default in added:
                     if default is not None:
                         getattr(md.properties.inputs, ident).value = default
+    next(i for i in ng.interface.items_tree if i.name == "Realize").description = \
+        "Stones become mesh. Keep off if My_Prongs follows: it needs stone instances"
 
 
 class B:
@@ -196,6 +206,21 @@ class B:
             self.link(selection, n.inputs["Selection"])
         self._set(self.enabled(n, "Value"), value)
         return n.outputs["Geometry"]
+
+    def realize(self, geo, x, y):
+        """Галочка Realize. Realize не учитывает отрицательный масштаб: отражённые камни выворачиваются."""
+        det = self.node("FunctionNodeMatrixDeterminant", x + 200, y - 200)
+        self.link(self.node("GeometryNodeInstanceTransform", x, y - 200).outputs["Transform"], det.inputs[0])
+        cap = self.node("GeometryNodeCaptureAttribute", x + 400, y, domain="INSTANCE")
+        cap.capture_items.new("BOOLEAN", "Mirrored")
+        self.link(geo, cap.inputs["Geometry"])
+        self.link(self.cmp("LESS_THAN", det.outputs[0], 0.0, x + 200, y - 360), cap.inputs["Mirrored"])
+        real = self.node("GeometryNodeRealizeInstances", x + 600, y)
+        self.link(cap.outputs["Geometry"], real.inputs["Geometry"])
+        flip = self.node("GeometryNodeFlipFaces", x + 800, y)
+        self.link(real.outputs[0], flip.inputs["Mesh"])
+        self.link(cap.outputs["Mirrored"], flip.inputs["Selection"])
+        return self.switch("GEOMETRY", self.g("Realize"), geo, flip.outputs[0], x + 1000, y)
 
     def stat(self, geo, value, dtype, x, y, selection=None):
         n = self.node("GeometryNodeAttributeStatistic", x, y, data_type=dtype, domain="POINT")
@@ -334,10 +359,23 @@ def build_group():
     start = b.math("ADD", b.g("Trim Curve"), b.g("Offset Curve"), 200, 200)
     rest = b.math("SUBTRACT", clen.outputs["Length"], b.g("Trim Curve"), 200, 20)
     end = b.math("ADD", rest, b.g("Offset Curve"), 380, 20)
-    trim = b.node("GeometryNodeTrimCurve", 560, 200, mode="LENGTH")
-    b.link(b.g("Geometry"), trim.inputs["Curve"])
-    b.link(start, b.enabled(trim, "Start"))
-    b.link(end, b.enabled(trim, "End"))
+    # замкнутый ряд: Start > End ведёт Trim через шов, вся кривая начинается с Offset Curve
+    any_m = b.boolean("OR", b.boolean("OR", b.g("XMirror"), b.g("YMirror"), 0, 800), b.g("ZMirror"), 200, 800)
+    is_loop = b.node("GeometryNodeInputSplineCyclic", 0, 640).outputs[0]
+    whole = b.cmp("EQUAL", b.g("Trim Curve"), 0.0, 0, 520)
+    closed = b.boolean("AND", is_loop,
+                       b.boolean("AND", whole, b.boolean("NOT", any_m, None, 200, 640), 380, 640), 560, 640)
+    cap = b.node("GeometryNodeCaptureAttribute", 380, 420, domain="CURVE")
+    cap.capture_items.new("BOOLEAN", "Closed")
+    b.link(b.g("Geometry"), cap.inputs["Geometry"])
+    b.link(closed, cap.inputs["Closed"])
+    loop_len = b.node("GeometryNodeSplineLength", 0, -160).outputs["Length"]
+    from_seam = b.math("FLOORED_MODULO", b.g("Offset Curve"), loop_len, 380, -160)
+    to_seam = b.math("FLOORED_MODULO", b.math("SUBTRACT", b.g("Offset Curve"), SEAM_GAP, 200, -320), loop_len, 380, -320)
+    trim = b.node("GeometryNodeTrimCurve", 760, 420, mode="LENGTH")
+    b.link(cap.outputs["Geometry"], trim.inputs["Curve"])
+    b.link(b.switch("FLOAT", closed, start, from_seam, 560, -160), b.enabled(trim, "Start"))
+    b.link(b.switch("FLOAT", closed, end, to_seam, 560, -320), b.enabled(trim, "End"))
 
     # --- рез по осям зеркала: остаётся сторона, где среднее положение кривой ---
     b.section("Cut at Mirror Axes")
@@ -360,21 +398,20 @@ def build_group():
     cut = b.node("GeometryNodeDeleteGeometry", 2480, 200, domain="POINT")
     b.link(fine.outputs["Curve"], cut.inputs["Geometry"])
     b.link(behind, cut.inputs["Selection"])
-    # Delete не размыкает замкнутую кривую, Resample учёл бы отрезок через ось
-    any_m = b.boolean("OR", b.boolean("OR", b.g("XMirror"), b.g("YMirror"), 2300, 20), b.g("ZMirror"), 2480, 20)
-    opened = b.node("GeometryNodeSetSplineCyclic", 2680, 200)
-    b.link(cut.outputs["Geometry"], opened.inputs["Geometry"])
-    b.link(any_m, opened.inputs["Selection"])
-    opened.inputs["Cyclic"].default_value = False
+    row = b.node("GeometryNodeSetSplineCyclic", 2680, 200)
+    b.link(cut.outputs["Geometry"], row.inputs["Geometry"])
+    b.link(cap.outputs["Closed"], row.inputs["Selection"])
+    row.inputs["Cyclic"].default_value = True
 
     # --- раскладка: концы ряда на концах кривой, зазор подгоняется ---
     b.section("Layout")
     slen = b.node("GeometryNodeSplineLength", 2920, 20)
     gaps = b.math("FLOOR", b.math("DIVIDE", slen.outputs["Length"], pitch, 3100, 20), None, 3280, 20)
-    count = b.math("ADD", gaps, 1.0, 3460, 20)
+    # в замкнутом ряду камней столько же, сколько зазоров, в открытом на один больше
+    count = b.math("ADD", gaps, b.switch("FLOAT", is_loop, 1.0, 0.0, 3280, -140), 3460, 20)
     coarse = b.node("GeometryNodeResampleCurve", 3640, 200)
     coarse.inputs["Mode"].default_value = "Count"
-    b.link(opened.outputs["Geometry"], coarse.inputs["Curve"])
+    b.link(row.outputs["Geometry"], coarse.inputs["Curve"])
     b.link(count, coarse.inputs["Count"])
     ctilt = b.node("GeometryNodeInputCurveTilt", 3640, -60)
     tilt = b.node("GeometryNodeSetCurveTilt", 3840, 200)
@@ -391,12 +428,13 @@ def build_group():
     fs = b.node("ShaderNodeSeparateXYZ", 3640, -500)
     b.link(far, fs.inputs[0])
     nearest = b.math("MINIMUM", b.math("MINIMUM", fs.outputs["X"], fs.outputs["Y"], 3820, -500), fs.outputs["Z"], 4000, -500)
-    free = b.boolean("AND", ends.outputs["Selection"],
+    # у замкнутого ряда концов нет
+    free = b.boolean("AND", b.boolean("AND", ends.outputs["Selection"], b.boolean("NOT", is_loop, None, 3280, -320), 3460, -320),
                      b.cmp("GREATER_EQUAL", nearest, radius, 4180, -500), 4360, -320)
     param = b.node("GeometryNodeSplineParameter", 3460, -760)
     of_point = b.node("GeometryNodeCurveOfPoint", 3460, -920)
     sample = b.node("GeometryNodeSampleCurve", 3820, -760, mode="FACTOR")
-    b.link(opened.outputs["Geometry"], sample.inputs["Curves"])
+    b.link(row.outputs["Geometry"], sample.inputs["Curves"])
     b.link(param.outputs["Factor"], sample.inputs["Factor"])
     b.link(of_point.outputs["Curve Index"], sample.inputs["Curve Index"])
     tangent = b.node("GeometryNodeInputTangent", 4180, -760).outputs[0]
@@ -455,8 +493,9 @@ def build_group():
     b.link(iop.outputs["Instances"], rm.inputs["Geometry"])
 
     b.frame = None
-    gout = b.node("NodeGroupOutput", 6900, 200)
-    b.link(rm.outputs["Geometry"], gout.inputs["Geometry"])
+    done = b.realize(rm.outputs["Geometry"], 6900, 200)
+    gout = b.node("NodeGroupOutput", 8100, 200)
+    b.link(done, gout.inputs["Geometry"])
 
     print("Node group '%s' rebuilt: %d nodes" % (GROUP_NAME, len(ng.nodes)))
     return ng

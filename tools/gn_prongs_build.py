@@ -31,6 +31,9 @@ Prong Tilt: Z = Up * cos - side * sin, плюс — верхушки к камн
 
 Чтобы убрать одну сторону, поставьте ей Scale XY = 0.
 
+Realize: всё, что вышло из группы (камни и крапана), становится мешем, отражённым камням
+переворачиваются грани.
+
 Интерфейс: сокеты только добавляются, если их нет — повторный запуск скрипта
 не сбрасывает значения на модификаторах. Узлы пересобираются целиком.
 """
@@ -50,6 +53,7 @@ SOCKETS = [
     ("Prongs", "NodeSocketObject", None, None, None, None, None),
     ("Metal Material", "NodeSocketMaterial", None, None, None, None, None),
     ("Show Stones", "NodeSocketBool", True, None, None, None, None),
+    ("Realize", "NodeSocketBool", False, None, None, None, None),
     ("Inner Offset", "NodeSocketFloat", 0.4, None, None, "Inner", None),
     ("Inner Scale XY", "NodeSocketFloat", 1.0, 0.0, None, "Inner", None),
     ("Outer Offset", "NodeSocketFloat", 0.4, None, None, "Outer", None),
@@ -188,6 +192,21 @@ class B:
         self.link(value, self.enabled(n, "Value"))
         self.link(index, n.inputs["Index"])
         return self.enabled_out(n, "Value")
+
+    def realize(self, geo, x, y):
+        """Галочка Realize. Realize не учитывает отрицательный масштаб: отражённые камни выворачиваются."""
+        det = self.node("FunctionNodeMatrixDeterminant", x + 200, y - 200)
+        self.link(self.node("GeometryNodeInstanceTransform", x, y - 200).outputs["Transform"], det.inputs[0])
+        cap = self.node("GeometryNodeCaptureAttribute", x + 400, y, domain="INSTANCE")
+        cap.capture_items.new("BOOLEAN", "Mirrored")
+        self.link(geo, cap.inputs["Geometry"])
+        self.link(self.cmp("LESS_THAN", det.outputs[0], 0.0, x + 200, y - 360), cap.inputs["Mirrored"])
+        real = self.node("GeometryNodeRealizeInstances", x + 600, y)
+        self.link(cap.outputs["Geometry"], real.inputs["Geometry"])
+        flip = self.node("GeometryNodeFlipFaces", x + 800, y)
+        self.link(real.outputs[0], flip.inputs["Mesh"])
+        self.link(cap.outputs["Mirrored"], flip.inputs["Selection"])
+        return self.switch("GEOMETRY", self.g("Realize"), geo, flip.outputs[0], x + 1000, y)
 
     def stat(self, geo, value, dtype, x, y):
         n = self.node("GeometryNodeAttributeStatistic", x, y, data_type=dtype, domain="POINT")
@@ -381,8 +400,9 @@ def build_group():
     join = b.node("GeometryNodeJoinGeometry", 8440, 200)
     b.link(rm.outputs["Geometry"], join.inputs["Geometry"])
     b.link(empty.outputs["Output"], join.inputs["Geometry"])
-    gout = b.node("NodeGroupOutput", 8640, 200)
-    b.link(join.outputs["Geometry"], gout.inputs["Geometry"])
+    done = b.realize(join.outputs["Geometry"], 8640, 200)
+    gout = b.node("NodeGroupOutput", 9840, 200)
+    b.link(done, gout.inputs["Geometry"])
 
     print("Node group '%s' rebuilt: %d nodes" % (GROUP_NAME, len(ng.nodes)))
     return ng
