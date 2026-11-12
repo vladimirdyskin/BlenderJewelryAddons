@@ -105,6 +105,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `evaluated_geometry()` держать в переменной, пока читаешь `instances_pointcloud()`
   (иначе ReferenceError). Python-обёртки коллекций `bpy.data.*` новые при каждом обращении —
   сравнивать их через `id()` нельзя.
+- **Remove Attribute после Instance on Points** заходит во вложенную геометрию и превращает ссылку
+  на объект (Object Info As Instance) в копию его меша: в depsgraph `instance_object` становится
+  сам инстансер, и JewelCraft (Gem Map, Design Report — `lib/asset.py` `iter_gems`, ищет `"gem"`
+  у исходного объекта) камни не видит. Атрибуты чистить на точках до инстансов.
+- **Смена `md.node_group`** на модификаторе (даже на копию группы и обратно) сбрасывает часть
+  входов. Сверять «до/после» на копии объекта, не на рабочих модификаторах.
 
 # Технические заметки по MCP
 

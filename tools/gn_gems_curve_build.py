@@ -20,7 +20,8 @@ My_Gems_Curve — только камни по кривой, с зеркалом
         Конец на оси зеркала не трогаем: X задаёт ось, а Z по хорде не зависит от того,
         как последний участок кривой подходит к оси.
     Зеркало (подгруппа Gems Curve Mirror) по очереди X, Y, Z — на точках, а не на инстансах.
-    Один Instance on Points.
+    Один Instance on Points. Служебные _gc_* убираются с точек до него: инстансы остаются
+        ссылками на объект Diam, и JewelCraft (Gem Map, Design Report) видит камни.
     Realize: камни становятся мешем, отражённым переворачиваются грани. Включать, только если
         дальше нет My_Prongs: он находит камни по инстансам, без них крапанов не будет.
 
@@ -652,18 +653,27 @@ def build_group():
     gem = b.node("GeometryNodeObjectInfo", 6200, -420, transform_space="ORIGINAL")
     gem.inputs["As Instance"].default_value = True
     b.link(b.g("Diam"), gem.inputs["Object"])
-    iop = b.node("GeometryNodeInstanceOnPoints", 6440, 200)
-    b.link(pts, iop.inputs["Points"])
-    b.link(gem.outputs["Geometry"], iop.inputs["Instance"])
-    b.link(rot.outputs["Rotation"], iop.inputs["Rotation"])
-    b.link(scale.outputs["Vector"], iop.inputs["Scale"])
-    rm = b.node("GeometryNodeRemoveAttribute", 6660, 200)
+    # _gc_* чистим на точках, до инстансов: Remove Attribute на инстансах заходит во вложенную
+    # геометрию и превращает ссылку на объект Diam в копию его меша — JewelCraft (Gem Map,
+    # Design Report) такие камни не видит. Поворот и масштаб фиксируем до чистки.
+    keep = b.node("GeometryNodeCaptureAttribute", 6400, 400, domain="POINT")
+    keep.capture_items.new("ROTATION", "Rotation")
+    keep.capture_items.new("VECTOR", "Scale")
+    b.link(pts, keep.inputs["Geometry"])
+    b.link(rot.outputs["Rotation"], keep.inputs["Rotation"])
+    b.link(scale.outputs["Vector"], keep.inputs["Scale"])
+    rm = b.node("GeometryNodeRemoveAttribute", 6600, 400)
     rm.inputs["Pattern Mode"].default_value = "Wildcard"
     rm.inputs["Name"].default_value = "_gc_*"
-    b.link(iop.outputs["Instances"], rm.inputs["Geometry"])
+    b.link(keep.outputs["Geometry"], rm.inputs["Geometry"])
+    iop = b.node("GeometryNodeInstanceOnPoints", 6800, 200)
+    b.link(rm.outputs["Geometry"], iop.inputs["Points"])
+    b.link(gem.outputs["Geometry"], iop.inputs["Instance"])
+    b.link(keep.outputs["Rotation"], iop.inputs["Rotation"])
+    b.link(keep.outputs["Scale"], iop.inputs["Scale"])
 
     b.frame = None
-    done = b.realize(rm.outputs["Geometry"], 6900, 200)
+    done = b.realize(iop.outputs["Instances"], 7000, 200)
     gout = b.node("NodeGroupOutput", 8100, 200)
     b.link(done, gout.inputs["Geometry"])
 
