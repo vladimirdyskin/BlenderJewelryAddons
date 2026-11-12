@@ -214,6 +214,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   края, `Offset` — зазор между ними). `Size` — диаметр по концам лучей, `Line Width` — по
   перпендикуляру (в Lines не больше Size/8). Сетка квадами: сектор 60° (Index Switch по индексу
   вершины) × 6 поворотов + Merge by Distance. Мастер-версия — ассет в `MyAssets.blend` (MyAsset).
+- `tools/gn_cube_ring_build.py` — группа `My_Cube_Ring`: кольцо из кубических сегментов с фасками
+  (как Chopard Ice Cube), ось по Y, один замкнутый меш без Boolean. Входы Inner Diameter, Thickness
+  (до центра наружной грани), Square Size (= ширина), Count (0 — квадратная грань), Chamfer (45° по
+  краям грани + V-канавки на боковинах; не больше 0.95 от min(полграни, полширины, толщины) —
+  иначе сегменты касаются по линии). Труба Curve to Mesh, вершины по номеру столбца/строки
+  (атрибуты `_cr_col`/`_cr_row` с пути и профиля): точки угла — пересечения плоскостей фасок,
+  совпавшие вершины сливает Merge by Distance, все грани плоские. Мастер-версия — в `MyAssets.blend`.
 - `gn_instance_face_build.py` (корень, только локально) — графы «Instance Face» / «My Instance Face».
 
 # Открытая задача: Gems List on Curve
