@@ -168,7 +168,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     `Prong at Start/End`. `Scale by Stone`: размеры и отступы заданы для
     камня 1 и умножаются на `gem_size` (в зазоре — среднее двух камней). `Along Offset` ≠ 0:
     крапан зазора делится на два, по 4 на камень; размер — по своему камню, отступ вбок —
-    по среднему двух (крапана зазора в одну линию).
+    по среднему двух (крапана зазора в одну линию). Оси крапана зеркальны относительно камня:
+    +Y — от линии ряда наружу (по стороне Inner/Outer), +X — вдоль ряда от своего камня;
+    где поворотом не выходит — Scale Y = −1 (несимметричный крапан отражается).
   - `tools/gn_gem_cutters_build.py` — `My_Gem_Cutters` на отдельном объекте без меша
     (`setup(stones, gap_cutter, stone_cutter)`): камни берёт с объекта `Stones` через Object Info.
     `Gap Cutter` — в середине зазора (+ `Cutters at Ends`), `Stone Cutter` — с матрицей камня

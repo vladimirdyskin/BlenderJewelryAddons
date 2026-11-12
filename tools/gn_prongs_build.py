@@ -33,7 +33,13 @@ Up — среднее осей Z двух камней, T — ход вдоль 
 
 Крапан: Site + side * Offset + Up * Z Offset, side = +-Across.
 Prong Tilt: Z = Up * cos - side * sin, плюс — верхушки к камням, минус — наружу, вокруг origin
-крапана. X крапана — вдоль ряда.
+крапана.
+
+Оси крапана одинаковы относительно своего камня (зеркальная расстановка): +Y — side, от линии
+ряда к крапану (по стороне Inner/Outer, а не по положению — отрицательный Offset не переворачивает),
++X — вдоль ряда от своего камня (общий крапан при Along Offset = 0 — по ходу ряда).
+Где Z x X смотрит против side, Scale Y = -1: несимметричный крапан отражается, как копии камней.
+Inner/Outer Offset и Scale XY — своей стороны.
 
 Чтобы убрать одну сторону, поставьте ей Scale XY = 0.
 
@@ -370,6 +376,8 @@ def build_group():
     sites = b.capture(cut.outputs["Geometry"], {
         "Site": ("VECTOR", site), "Up": ("VECTOR", site_up), "T": ("VECTOR", travel), "Across": ("VECTOR", across),
         "Pair": ("BOOLEAN", ok), "S Back": ("FLOAT", size), "S Front": ("FLOAT", front_s),
+        # X крапана от своего камня: у начала ряда (назад) T смотрит на камень
+        "X Sign": ("FLOAT", b.switch("FLOAT", back, 1.0, -1.0, 4580, -1400)),
     }, 4960, 200)
 
     # --- какая сторона наружу ---
@@ -401,6 +409,10 @@ def build_group():
     k_side = b.switch("FLOAT", b.g("Scale by Stone"), 1.0, mean_s, 7340, -1000)
     along_cap = b.capture(dup_a.outputs["Geometry"], {
         "Site": ("VECTOR", site), "K": ("FLOAT", k), "K Side": ("FLOAT", k_side),
+        # разделённый передний крапан: свой камень впереди, X назад
+        "X Sign": ("FLOAT", b.math("MULTIPLY", sites.outputs["X Sign"],
+                                   b.switch("FLOAT", b.boolean("AND", split, front, 7340, -1180), 1.0, -1.0,
+                                            7520, -1180), 7700, -1180)),
     }, 7900, 200)
 
     # --- крапана: внутрь и наружу ---
@@ -431,12 +443,16 @@ def build_group():
     side_part = b.vmath("SCALE", side, sin_t, 7380, -600)
     lean = b.vmath("SUBTRACT", up_part, side_part, 7560, -420)
 
+    # X — от своего камня вдоль ряда, Y — side; где Z x X против side, отражение по Y
+    axis_x = b.vmath("SCALE", sites.outputs["T"], along_cap.outputs["X Sign"], 7560, -820)
     rot = b.node("FunctionNodeAxesToRotation", 7740, -420, primary_axis="Z", secondary_axis="X")
     b.link(lean, rot.inputs["Primary Axis"])
-    b.link(sites.outputs["T"], rot.inputs["Secondary Axis"])
+    b.link(axis_x, rot.inputs["Secondary Axis"])
+    y_dot = b.vmath("DOT_PRODUCT", b.vmath("CROSS_PRODUCT", lean, axis_x, 7740, -820), side, 7920, -820)
+    y_sign = b.switch("FLOAT", b.cmp("GREATER_EQUAL", y_dot, 0.0, 8100, -820), -1.0, 1.0, 8280, -820)
     scale = b.node("ShaderNodeCombineXYZ", 7740, -640)
     b.link(scale_xy, scale.inputs["X"])
-    b.link(scale_xy, scale.inputs["Y"])
+    b.link(b.math("MULTIPLY", scale_xy, y_sign, 7560, -1000), scale.inputs["Y"])
     b.link(b.math("MULTIPLY", b.g("Scale Z"), k, 7560, -640), scale.inputs["Z"])
 
     # один меш на все крапана: материал на меш, инстансы ссылаются на него
