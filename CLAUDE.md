@@ -150,6 +150,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   append из другого кольца: в `Ring5Diams.blend` в группу добавлены Mesh Boolean по объекту
   `Vert` этого кольца. После обновления сверить камни/крапаны: исправленная чётность может
   добавить камень — прежнюю раскладку возвращает Spacing побольше.
+- **Новая связка вместо `My_Gems_On_Curve`**: камни, крапана и катеры — три отдельные группы.
+  Скрипты пересобирают узлы целиком, сокеты только добавляют (новый вход встаёт в конец панели,
+  значения на модификаторах не сбрасываются). Порядок прогонки: gems_curve → prongs → cutters.
+  - `tools/gn_gems_curve_build.py` — `My_Gems_Curve` (+ подгруппа `Gems Curve Mirror`): только
+    камни по кривой, зеркало без дублей на оси (камень, пересекающий ось, один и стоит на оси).
+    Auto Size: размер по радиусу точки кривой (Alt+S), Map Range `Curve R` → `Stone ø`,
+    к ближайшему `Stone ø Step`. Раскладка в Repeat Zone: центр следующего = S + R + Spacing + r,
+    зазор от края до края точный при разных размерах, остаток поровну на зазоры, крайние камни
+    на концах кривой. Атрибуты на инстансах: `gem_order`, `gem_up`, `gem_along`, `gem_r`,
+    `gem_size`, `gem_mirror` — по ним работают две другие группы. Realize — только если дальше
+    нет `My_Prongs`.
+  - `tools/gn_prongs_build.py` — `My_Prongs`, модификатор после `My_Gems_Curve`: крапана в зазорах
+    (соседи — по `Max Gap`), `Prong at Start/End`. `Scale by Stone`: размеры и отступы заданы для
+    камня 1 и умножаются на `gem_size` (в зазоре — среднее двух камней). `Along Offset` ≠ 0:
+    крапан зазора делится на два, по 4 на камень; размер — по своему камню, отступ вбок —
+    по среднему двух (крапана зазора в одну линию).
+  - `tools/gn_gem_cutters_build.py` — `My_Gem_Cutters` на отдельном объекте без меша
+    (`setup(stones, gap_cutter, stone_cutter)`): камни берёт с объекта `Stones` через Object Info.
+    `Gap Cutter` — в середине зазора (+ `Cutters at Ends`), `Stone Cutter` — с матрицей камня
+    (`SampleCutter` подходит без подгонки). `gem_up`/`gem_along` — вектора в пространстве объекта
+    камней, поэтому расчёт в Object Info Original, в конце Transform Geometry матрицей
+    `Transform` у Object Info Relative. Помощники сборки берёт из `gn_prongs_build.py`.
+  - Мастер-версии всех трёх — ассеты (каталог «MyAsset») в `MyAssets.blend`. Обновлять прогоном
+    build-скриптов в фоновом Blender на самом `MyAssets.blend`: группа пересобирается на месте,
+    пометка ассета и каталог сохраняются. У групп, помеченных из Python, пустой
+    `catalog_simple_name` (read-only) — каталог задаёт UUID, это не ошибка.
 - `jewel_tools/metal_union.py` — кнопка Build Metal Mesh (Jewel Tools → Metal for STL): металл
   выделенных объектов (меши + GN-инстансы, камни пропускаются) одним замкнутым мешем `Metal`
   в коллекции `Metal`; вход `Cutter` модификатора — катер по матрице каждого камня, вычитается
