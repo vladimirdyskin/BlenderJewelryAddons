@@ -113,6 +113,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `z180_merge_mesh_only_patch.py` (корень, локально). Transform Geometry ссылку не ломает.
 - **Смена `md.node_group`** на модификаторе (даже на копию группы и обратно) сбрасывает часть
   входов. Сверять «до/после» на копии объекта, не на рабочих модификаторах.
+- **Menu Switch при пересборке** (`nodes.clear()` + новый узел) даёт пунктам меню новые внутренние
+  id, а модификатор хранит id — режим на модификаторах сам меняется на другой. Значение
+  (`md.properties.inputs.<id>.value` — строка с именем пункта) запоминать до пересборки и
+  возвращать после, как в `tools/gn_magen_david_build.py`.
 
 # Технические заметки по MCP
 
@@ -205,6 +209,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   STL пока вручную: выделить `Metal` → File → Export → STL.
 - `tools/gn_solidify_xy_build.py` — группа `Solidify XY`: толщина строго в плоскости XY
   (Z не меняется), Thickness = реальная толщина по нормали.
+- `tools/gn_magen_david_build.py` — группа `My_Magen_David`: плоский Маген Давид в XY (луч по +Y),
+  `Mode` Lines (два треугольника-рамки одним контуром) / Solid / Double Outline (две полосы вдоль
+  края, `Offset` — зазор между ними). `Size` — диаметр по концам лучей, `Line Width` — по
+  перпендикуляру (в Lines не больше Size/8). Сетка квадами: сектор 60° (Index Switch по индексу
+  вершины) × 6 поворотов + Merge by Distance. Мастер-версия — ассет в `MyAssets.blend` (MyAsset).
 - `gn_instance_face_build.py` (корень, только локально) — графы «Instance Face» / «My Instance Face».
 
 # Открытая задача: Gems List on Curve
