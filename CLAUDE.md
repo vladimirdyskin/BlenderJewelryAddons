@@ -150,9 +150,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   append из другого кольца: в `Ring5Diams.blend` в группу добавлены Mesh Boolean по объекту
   `Vert` этого кольца. После обновления сверить камни/крапаны: исправленная чётность может
   добавить камень — прежнюю раскладку возвращает Spacing побольше.
-- **Новая связка вместо `My_Gems_On_Curve`**: камни, крапана и катеры — три отдельные группы.
+- **Новая связка вместо `My_Gems_On_Curve`**: камни, крапана, катеры и просвет — отдельные группы.
   Скрипты пересобирают узлы целиком, сокеты только добавляют (новый вход встаёт в конец панели,
-  значения на модификаторах не сбрасываются). Порядок прогонки: gems_curve → prongs → cutters.
+  значения на модификаторах не сбрасываются; убрать сокет — вручную, `ng.interface.remove`).
+  Порядок прогонки: gems_curve → prongs → cutters → channel.
   - `tools/gn_gems_curve_build.py` — `My_Gems_Curve` (+ подгруппа `Gems Curve Mirror`): только
     камни по кривой, зеркало без дублей на оси (камень, пересекающий ось, один и стоит на оси).
     Auto Size: размер по радиусу точки кривой (Alt+S), Map Range `Curve R` → `Stone ø`,
@@ -176,8 +177,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     `Gap Cutter` — в середине зазора (+ `Cutters at Ends`), `Stone Cutter` — с матрицей камня
     (`SampleCutter` подходит без подгонки). `gem_up`/`gem_along` — вектора в пространстве объекта
     камней, поэтому расчёт в Object Info Original, в конце Transform Geometry матрицей
-    `Transform` у Object Info Relative. Помощники сборки берёт из `gn_prongs_build.py`.
-  - Мастер-версии всех трёх — ассеты (каталог «MyAsset») в `MyAssets.blend`. Обновлять прогоном
+    `Transform` у Object Info Relative. Помощники сборки берёт из `gn_prongs_build.py`;
+    камни с соседями (`stone_rows`) и перенос в свои координаты (`to_self_space`) — общие
+    с `My_Gem_Channel`.
+  - `tools/gn_gem_channel_build.py` — `My_Gem_Channel` (`setup(stones, values=...)`): просвет —
+    сплошной замкнутый катер вдоль ряда. Путь Catmull-Rom через центры камней, куски рвутся по
+    `Max Gap`, за крайними камнями — `Extend`; сечение — скруглённый прямоугольник `Width` × `Height`
+    (`Round`), верх сечения по `gem_up`; `Scale by Stone` — всё × `gem_size`, плавно. X профиля у
+    Curve to Mesh идёт по нормали пути, поэтому высота — в Width прямоугольника. Отдельный объект и
+    свой Boolean: катеры и просвет в одном операнде перекрываются, Manifold такое не склеивает.
+  - Мастер-версии всех четырёх — ассеты (каталог «MyAsset») в `MyAssets.blend`. Обновлять прогоном
     build-скриптов в фоновом Blender на самом `MyAssets.blend`: группа пересобирается на месте,
     пометка ассета и каталог сохраняются. У групп, помеченных из Python, пустой
     `catalog_simple_name` (read-only) — каталог задаёт UUID, это не ошибка.

@@ -69,29 +69,9 @@ def load_prongs():
     return mod
 
 
-def build_group():
-    pr = load_prongs()
-    ng = bpy.data.node_groups.get(GROUP_NAME)
-    if ng is None:
-        ng = bpy.data.node_groups.new(GROUP_NAME, "GeometryNodeTree")
-    pr.ensure_interface(ng)
-    ng.nodes.clear()
-
-    b = pr.B(ng, -300)
-
-    def shape(sock_name, x, y):
-        info = b.node("GeometryNodeObjectInfo", x, y, transform_space="ORIGINAL")
-        info.inputs["As Instance"].default_value = False
-        b.link(b.g(sock_name), info.inputs["Object"])
-        return info.outputs["Geometry"]
-
-    def gate(sock_name, geo, x, y):
-        # выключено — пустая геометрия
-        n = b.node("GeometryNodeSwitch", x, y, input_type="GEOMETRY")
-        b.link(b.g(sock_name), n.inputs["Switch"])
-        b.link(geo, n.inputs["True"])
-        return n.outputs["Output"]
-
+def stone_rows(b, pr):
+    """Камни с объекта Stones по порядку вдоль ряда (в его координатах) и соседи по кругу.
+    Общая часть My_Gem_Cutters и My_Gem_Channel."""
     # --- камни по порядку вдоль ряда, в координатах объекта Stones ---
     b.section("Stones in Order")
     src = b.node("GeometryNodeObjectInfo", 0, 200, transform_space="ORIGINAL")
@@ -154,6 +134,53 @@ def build_group():
         "Prev P": ("VECTOR", prev_p), "Prev Up": ("VECTOR", prev_u), "Prev R": ("FLOAT", prev_r),
         "Prev OK": ("BOOLEAN", prev_ok),
     }, 2580, 200)
+
+    return {"stones": stones, "stone_xf": stone_xf, "cap": cap,
+            "pos": pos, "up": up, "along": along, "rad": rad}
+
+
+def to_self_space(b, geo, x, y):
+    """Убрать gem_* (иначе катеры примут за камни) и перенести из координат Stones
+    в координаты своего объекта (Transform у Object Info Relative)."""
+    rm = b.node("GeometryNodeRemoveAttribute", x, y)
+    rm.inputs["Pattern Mode"].default_value = "Wildcard"
+    rm.inputs["Name"].default_value = "gem_*"
+    b.link(geo, rm.inputs["Geometry"])
+    rel = b.node("GeometryNodeObjectInfo", x, y - 400, transform_space="RELATIVE")
+    b.link(b.g("Stones"), rel.inputs["Object"])
+    tf = b.node("GeometryNodeTransform", x + 220, y)
+    tf.inputs["Mode"].default_value = "Matrix"
+    b.link(rm.outputs["Geometry"], tf.inputs["Geometry"])
+    b.link(rel.outputs["Transform"], tf.inputs["Transform"])
+    return tf.outputs["Geometry"]
+
+
+def build_group():
+    pr = load_prongs()
+    ng = bpy.data.node_groups.get(GROUP_NAME)
+    if ng is None:
+        ng = bpy.data.node_groups.new(GROUP_NAME, "GeometryNodeTree")
+    pr.ensure_interface(ng)
+    ng.nodes.clear()
+
+    b = pr.B(ng, -300)
+
+    def shape(sock_name, x, y):
+        info = b.node("GeometryNodeObjectInfo", x, y, transform_space="ORIGINAL")
+        info.inputs["As Instance"].default_value = False
+        b.link(b.g(sock_name), info.inputs["Object"])
+        return info.outputs["Geometry"]
+
+    def gate(sock_name, geo, x, y):
+        # выключено — пустая геометрия
+        n = b.node("GeometryNodeSwitch", x, y, input_type="GEOMETRY")
+        b.link(b.g(sock_name), n.inputs["Switch"])
+        b.link(geo, n.inputs["True"])
+        return n.outputs["Output"]
+
+    r = stone_rows(b, pr)
+    stones, stone_xf, cap = r["stones"], r["stone_xf"], r["cap"]
+    pos, up, along, rad = r["pos"], r["up"], r["along"], r["rad"]
 
     # --- между камнями: заготовки вперёд и назад ---
     b.section("Gap Sites")
@@ -254,20 +281,9 @@ def build_group():
     join = b.node("GeometryNodeJoinGeometry", 6300, 200)
     b.link(gap_out, join.inputs["Geometry"])
     b.link(stone_out, join.inputs["Geometry"])
-    # атрибуты камней перешли на катеры: иначе их примут за камни
-    rm = b.node("GeometryNodeRemoveAttribute", 6500, 200)
-    rm.inputs["Pattern Mode"].default_value = "Wildcard"
-    rm.inputs["Name"].default_value = "gem_*"
-    b.link(join.outputs["Geometry"], rm.inputs["Geometry"])
-    rel = b.node("GeometryNodeObjectInfo", 6500, -200, transform_space="RELATIVE")
-    b.link(b.g("Stones"), rel.inputs["Object"])
-    tf = b.node("GeometryNodeTransform", 6720, 200)
-    tf.inputs["Mode"].default_value = "Matrix"
-    b.link(rm.outputs["Geometry"], tf.inputs["Geometry"])
-    b.link(rel.outputs["Transform"], tf.inputs["Transform"])
 
     b.frame = None
-    done = b.realize(tf.outputs["Geometry"], 6940, 200)
+    done = b.realize(to_self_space(b, join.outputs["Geometry"], 6500, 200), 6940, 200)
     gout = b.node("NodeGroupOutput", 8140, 200)
     b.link(done, gout.inputs["Geometry"])
 
