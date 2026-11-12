@@ -159,10 +159,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     к ближайшему `Stone ø Step`. Раскладка в Repeat Zone: центр следующего = S + R + Spacing + r,
     зазор от края до края точный при разных размерах, остаток поровну на зазоры, крайние камни
     на концах кривой. Атрибуты на инстансах: `gem_order`, `gem_up`, `gem_along`, `gem_r`,
-    `gem_size`, `gem_mirror` — по ним работают две другие группы. Realize — только если дальше
-    нет `My_Prongs`.
-  - `tools/gn_prongs_build.py` — `My_Prongs`, модификатор после `My_Gems_Curve`: крапана в зазорах
-    (соседи — по `Max Gap`), `Prong at Start/End`. `Scale by Stone`: размеры и отступы заданы для
+    `gem_size`, `gem_mirror` — по ним работают две другие группы; камнем считается инстанс
+    с `gem_r` > 0 (у крапанов в том же стеке после Join `gem_*` = 0). Realize — только если
+    дальше нет `My_Prongs`.
+  - `tools/gn_prongs_build.py` — `My_Prongs`, модификатор после `My_Gems_Curve` или на отдельном
+    объекте (вход `Stones` — кривая с камнями, перенос как в `My_Gem_Cutters`; `Show Stones`
+    тогда пропускает только свою геометрию): крапана в зазорах (соседи — по `Max Gap`),
+    `Prong at Start/End`. `Scale by Stone`: размеры и отступы заданы для
     камня 1 и умножаются на `gem_size` (в зазоре — среднее двух камней). `Along Offset` ≠ 0:
     крапан зазора делится на два, по 4 на камень; размер — по своему камню, отступ вбок —
     по среднему двух (крапана зазора в одну линию).

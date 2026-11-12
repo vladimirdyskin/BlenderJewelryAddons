@@ -4,6 +4,12 @@ My_Prongs — крапана между камнями. Второй модиф�
 На вход приходят инстансы камней с атрибутами gem_order, gem_up, gem_along, gem_r
 (см. tools/gn_gems_curve_build.py). На выход — те же камни плюс инстансы крапанов.
 
+Stones (объект): камни берутся с этого объекта (кривая с My_Gems_Curve) через Object Info,
+модификатор можно повесить на отдельный объект. Расчёт в координатах Stones (gem_up — вектор
+в его пространстве), в конце Transform Geometry матрицей Transform у Object Info Relative.
+Show Stones пропускает только свою геометрию из стека — камни Stones не копируются.
+Пусто или на объекте нет инстансов — камни из стека, как раньше.
+
 Схема:
     Instances to Points -> Sort Elements по gem_order: точки идут по порядку вдоль ряда.
     Evaluate at Index: для каждого камня следующий и предыдущий (по кругу).
@@ -62,6 +68,7 @@ ATTR_SIZE = "gem_size"
 # (имя, тип, default, min, max, панель, subtype)
 SOCKETS = [
     ("Prongs", "NodeSocketObject", None, None, None, None, None),
+    ("Stones", "NodeSocketObject", None, None, None, None, None),
     ("Metal Material", "NodeSocketMaterial", None, None, None, None, None),
     ("Show Stones", "NodeSocketBool", True, None, None, None, None),
     ("Realize", "NodeSocketBool", False, None, None, None, None),
@@ -251,8 +258,17 @@ def build_group():
     b.section("Stones in Order")
     order = b.named(ATTR_ORDER, "FLOAT", 0, -60)
     to_pts = b.node("GeometryNodeInstancesToPoints", 200, 200)
-    b.link(b.g("Geometry"), to_pts.inputs["Instances"])
-    b.link(order.outputs["Exists"], to_pts.inputs["Selection"])
+    # камни: с объекта Stones (если на нём есть инстансы) или из стека
+    src = b.node("GeometryNodeObjectInfo", -200, 520, transform_space="ORIGINAL")
+    b.link(b.g("Stones"), src.inputs["Object"])
+    src_n = b.node("GeometryNodeAttributeDomainSize", 0, 520, component="INSTANCES")
+    b.link(src.outputs["Geometry"], src_n.inputs["Geometry"])
+    use_obj = b.cmp("GREATER_THAN", src_n.outputs["Instance Count"], 0.0, 200, 520)
+    source = b.switch("GEOMETRY", use_obj, b.g("Geometry"), src.outputs["Geometry"], 0, 360)
+    b.link(source, to_pts.inputs["Instances"])
+    # только камни: у крапанов, пришедших вместе с камнями, gem_* после Join = 0
+    is_stone = b.cmp("GREATER_THAN", b.named(ATTR_R, "FLOAT", 0, -220).outputs["Attribute"], 0.0, 200, -220)
+    b.link(b.boolean("AND", order.outputs["Exists"], is_stone, 200, -60), to_pts.inputs["Selection"])
     sort = b.node("GeometryNodeSortElements", 400, 200, domain="POINT")
     b.link(to_pts.outputs["Points"], sort.inputs["Geometry"])
     b.link(order.outputs["Attribute"], sort.inputs["Sort Weight"])
@@ -441,17 +457,25 @@ def build_group():
     rm.inputs["Pattern Mode"].default_value = "Wildcard"
     rm.inputs["Name"].default_value = "gem_*"
     b.link(iop.outputs["Instances"], rm.inputs["Geometry"])
+    # камни с объекта Stones: из его координат в координаты своего объекта
+    rel = b.node("GeometryNodeObjectInfo", 8200, -200, transform_space="RELATIVE")
+    b.link(b.g("Stones"), rel.inputs["Object"])
+    tf = b.node("GeometryNodeTransform", 8420, -60)
+    tf.inputs["Mode"].default_value = "Matrix"
+    b.link(rm.outputs["Geometry"], tf.inputs["Geometry"])
+    b.link(rel.outputs["Transform"], tf.inputs["Transform"])
+    prongs = b.switch("GEOMETRY", use_obj, rm.outputs["Geometry"], tf.outputs["Geometry"], 8640, -60)
 
-    # --- выход: камни как пришли + крапана ---
+    # --- выход: своя геометрия из стека + крапана ---
     b.frame = None
     empty = b.node("GeometryNodeSwitch", 8200, 420, input_type="GEOMETRY")
     b.link(b.g("Show Stones"), empty.inputs["Switch"])
     b.link(b.g("Geometry"), empty.inputs["True"])
-    join = b.node("GeometryNodeJoinGeometry", 8440, 200)
-    b.link(rm.outputs["Geometry"], join.inputs["Geometry"])
+    join = b.node("GeometryNodeJoinGeometry", 8840, 200)
+    b.link(prongs, join.inputs["Geometry"])
     b.link(empty.outputs["Output"], join.inputs["Geometry"])
-    done = b.realize(join.outputs["Geometry"], 8640, 200)
-    gout = b.node("NodeGroupOutput", 9840, 200)
+    done = b.realize(join.outputs["Geometry"], 9040, 200)
+    gout = b.node("NodeGroupOutput", 10240, 200)
     b.link(done, gout.inputs["Geometry"])
 
     print("Node group '%s' rebuilt: %d nodes" % (GROUP_NAME, len(ng.nodes)))

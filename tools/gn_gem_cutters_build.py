@@ -103,7 +103,9 @@ def build_group():
     order = b.named(pr.ATTR_ORDER, "FLOAT", 200, -120)
     to_pts = b.node("GeometryNodeInstancesToPoints", 400, 200)
     b.link(xf.outputs["Geometry"], to_pts.inputs["Instances"])
-    b.link(order.outputs["Exists"], to_pts.inputs["Selection"])
+    # только камни: у крапанов на том же объекте (My_Prongs в стеке) gem_* после Join = 0
+    is_stone = b.cmp("GREATER_THAN", b.named(pr.ATTR_R, "FLOAT", 200, -280).outputs["Attribute"], 0.0, 400, -280)
+    b.link(b.boolean("AND", order.outputs["Exists"], is_stone, 400, -120), to_pts.inputs["Selection"])
     sort = b.node("GeometryNodeSortElements", 600, 200, domain="POINT")
     b.link(to_pts.outputs["Points"], sort.inputs["Geometry"])
     b.link(order.outputs["Attribute"], sort.inputs["Sort Weight"])
