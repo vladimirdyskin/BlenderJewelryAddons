@@ -31,12 +31,26 @@ My_Gems_Curve — только камни по кривой, с зеркалом
 
 Длина камня вдоль кривой — Gem Size * bbox X исходника (багеты), как в My_Gems_On_Curve.
 
+Auto Size: размер камня по радиусу точки кривой (Alt+S), как в My_Gems_On_Curve:
+    Map Range Curve R Min..Max -> Stone ø Min..Max, к ближайшему Stone ø Step (0 — без шага).
+    Раскладка по длине дуги ряда (после Trim и реза по зеркалу), два Repeat Zone:
+        1) жадно от начала: центр следующего = S + R + Spacing + r, r — по размеру в его центре
+           (3 уточнения; центр ставится по последнему r, поэтому зазор точный и на смене шага);
+           камни, пока центр не вышел за конец (замкнутый ряд — пока есть место под зазор
+           до первого камня);
+        2) то же число камней с зазором Spacing + остаток / число зазоров.
+    Остаток после второго прохода (размеры сдвинулись) — поровну на зазоры.
+    Концы ряда на концах кривой, при зеркале камень на оси, как без Auto Size.
+    Точки -> Points to Curves -> дальше общий путь (касательные, зеркало, инстансы).
+    Размер каждого камня — атрибут _gc_size, gem_r — свой у каждого камня.
+
 Атрибуты на инстансах (их читает My_Prongs):
     gem_order — порядок вдоль ряда. Отражается относительно того конца ряда, что ближе к оси,
                 поэтому обход идёт непрерывно через ось и не разворачивается.
     gem_up    — ось Z камня (Instance Rotation не годится: у копий отрицательный масштаб).
     gem_along — ось X камня, по ней встают концевые крапана.
     gem_r     — половина длины камня вдоль кривой.
+    gem_size  — размер камня (масштаб инстанса), по нему My_Prongs масштабирует крапана.
     gem_mirror — -1 у зеркальной копии: её ход по кривой обратный, начало ряда стало концом.
 
 Ограничение: замкнутая кривая с включённым зеркалом режется в порядке точек, шов должен быть
@@ -57,8 +71,13 @@ ATTR_UP = "gem_up"
 ATTR_ALONG = "gem_along"
 ATTR_R = "gem_r"
 ATTR_S = "gem_mirror"  # знак Scale X: -1 у зеркальной копии
+ATTR_GEM_SIZE = "gem_size"
 ATTR_X = "_gc_x"       # ось X камня
 ATTR_Z = "_gc_z"       # ось Z камня
+ATTR_SIZE = "_gc_size" # размер камня (масштаб инстанса)
+ATTR_SPOS = "_gc_s"    # Auto Size: центр камня по длине ряда
+ATTR_IDX = "_gc_i"     # Auto Size: номер камня в ряду
+ATTR_TILT = "_gc_tilt" # Auto Size: наклон кривой в центре камня
 
 CUT_STEP = 0.002     # шаг мелкого Resample, доля шага камней: ошибка реза меньше 0.2% шага
 SEAM_GAP = 1e-4      # замкнутый ряд режется чуть раньше шва: при равных концах Trim даёт точку
@@ -72,6 +91,12 @@ SOCKETS = [
     ("Trim Curve", "NodeSocketFloat", 0.0, None, None, "Stone", None),
     ("Offset Curve", "NodeSocketFloat", 0.0, None, None, "Stone", None),
     ("Tilt", "NodeSocketFloat", 0.0, None, None, "Stone", "ANGLE"),
+    ("Auto Size", "NodeSocketBool", False, None, None, "Auto Size", None),
+    ("Curve R Min", "NodeSocketFloat", 1.0, None, None, "Auto Size", None),
+    ("Curve R Max", "NodeSocketFloat", 3.0, None, None, "Auto Size", None),
+    ("Stone ø Min", "NodeSocketFloat", 1.0, 0.01, None, "Auto Size", None),
+    ("Stone ø Max", "NodeSocketFloat", 2.0, 0.01, None, "Auto Size", None),
+    ("Stone ø Step", "NodeSocketFloat", 0.1, 0.0, None, "Auto Size", None),
     ("XMirror", "NodeSocketBool", False, None, None, "Mirror", None),
     ("YMirror", "NodeSocketBool", False, None, None, "Mirror", None),
     ("ZMirror", "NodeSocketBool", False, None, None, "Mirror", None),
@@ -327,6 +352,139 @@ def build_mirror():
     return ng
 
 
+def auto_layout(b, row, factor, x, y):
+    """Auto Size: точки камней на ряду row (см. docstring модуля). Выход — ломаная по камням."""
+    b.section("Auto Size")
+    clen = b.node("GeometryNodeCurveLength", x, y + 400)
+    b.link(row, clen.inputs["Curve"])
+    length = clen.outputs["Length"]
+    loop = b.node("GeometryNodeInputSplineCyclic", x, y + 560).outputs[0]
+    closed = b.enabled_out(b.stat(row, loop, "FLOAT", x + 200, y + 560), "Max")  # 1 — замкнутый
+    gap = b.g("Spacing")
+    rad = b.node("GeometryNodeInputRadius", x, y + 720).outputs[0]
+    tilt = b.node("GeometryNodeInputCurveTilt", x, y + 880).outputs[0]
+
+    def sample(value, s, xx, yy):
+        n = b.node("GeometryNodeSampleCurve", xx, yy, mode="LENGTH", data_type="FLOAT")
+        b.link(row, n.inputs["Curves"])
+        b.link(value, n.inputs["Value"])
+        b._set(n.inputs["Length"], s)
+        return n
+
+    def size_at(s, xx, yy):
+        # радиус точки кривой -> ø камня, к ближайшему шагу
+        mr = b.node("ShaderNodeMapRange", xx + 200, yy, data_type="FLOAT")
+        b.link(sample(rad, s, xx, yy).outputs["Value"], b.enabled(mr, "Value"))
+        for sock, name in (("From Min", "Curve R Min"), ("From Max", "Curve R Max"),
+                           ("To Min", "Stone ø Min"), ("To Max", "Stone ø Max")):
+            b.link(b.g(name), b.enabled(mr, sock))
+        v, step = mr.outputs["Result"], b.g("Stone ø Step")
+        snapped = b.math("MULTIPLY", b.math("ROUND", b.math("DIVIDE", v, step, xx + 400, yy - 160), None,
+                                            xx + 580, yy - 160), step, xx + 760, yy - 160)
+        return b.switch("FLOAT", b.cmp("GREATER_THAN", step, 0.0, xx + 400, yy), v, snapped, xx + 940, yy)
+
+    def half(size, xx, yy):
+        return b.math("MULTIPLY", b.math("MULTIPLY", size, factor, xx, yy), 0.5, xx + 180, yy)
+
+    def next_stone(s_prev, r_prev, g, xx, yy):
+        # центр = S + R + g + r, r — по размеру в центре; 3 уточнения, центр по последнему r
+        base = b.math("ADD", b.math("ADD", s_prev, r_prev, xx, yy), g, xx + 180, yy)
+        r, size = r_prev, None
+        for k in range(3):
+            xk = xx + 360 + k * 1400
+            size = size_at(b.math("ADD", base, r, xk, yy), xk + 180, yy)
+            r = half(size, xk + 1140, yy)
+        return b.math("ADD", base, r, xx + 4600, yy), r, size
+
+    def repeat(items, iterations, xx, yy):
+        rin = b.node("GeometryNodeRepeatInput", xx, yy)
+        rout = b.node("GeometryNodeRepeatOutput", xx + 5600, yy)
+        rin.pair_with_output(rout)
+        rout.repeat_items.clear()
+        for stype, name in items:
+            rout.repeat_items.new(stype, name)
+        b.link(iterations, rin.inputs["Iterations"])
+        return rin, rout
+
+    size0 = size_at(0.0, x, y)
+    r0 = half(size0, x + 1140, y)
+
+    # --- проход 1: сколько камней влезает с зазором Spacing ---
+    min_size = b.math("MINIMUM", b.g("Stone ø Min"), b.g("Stone ø Max"), x, y - 300)
+    stride = b.math("MAXIMUM", b.math("ADD", half(min_size, x + 180, y - 300), gap, x + 540, y - 300), 0.02,
+                    x + 720, y - 300)
+    iters = b.math("MINIMUM", b.math("ADD", b.math("CEIL", b.math("DIVIDE", length, stride, x + 900, y - 300),
+                                                   None, x + 1080, y - 300), 2.0, x + 1260, y - 300), 5000.0,
+                   x + 1440, y - 300)
+    rin, rout = repeat((("FLOAT", "S"), ("FLOAT", "R"), ("FLOAT", "N")), iters, x + 1600, y - 600)
+    b.link(r0, rin.inputs["R"])
+    s, r, _ = next_stone(rin.outputs["S"], rin.outputs["R"], gap, x + 1800, y - 600)
+    tail = b.math("MULTIPLY", closed, b.math("ADD", b.math("ADD", r, gap, x + 6400, y - 800), r0, x + 6580, y - 800),
+                  x + 6760, y - 800)
+    fits = b.cmp("LESS_EQUAL", b.math("ADD", s, tail, x + 6940, y - 800),
+                 b.math("ADD", length, 1e-5, x + 6940, y - 980), x + 7120, y - 800)
+    b.link(b.switch("FLOAT", fits, rin.outputs["S"], s, x + 7000, y - 600), rout.inputs["S"])
+    b.link(b.switch("FLOAT", fits, rin.outputs["R"], r, x + 7000, y - 440), rout.inputs["R"])
+    b.link(b.math("ADD", rin.outputs["N"], fits, x + 7000, y - 280), rout.inputs["N"])
+    extra = rout.outputs["N"]                      # камней после первого
+
+    # остаток -> зазор второго прохода; зазоров n - 1, у замкнутого n
+    gaps = b.math("MAXIMUM", b.math("ADD", extra, closed, x + 7400, y - 300), 1.0, x + 7580, y - 300)
+
+    def end_used(s_last, r_last, g, xx, yy):
+        pad = b.math("ADD", b.math("ADD", r_last, g, xx, yy), r0, xx + 180, yy)
+        return b.math("ADD", s_last, b.math("MULTIPLY", closed, pad, xx + 360, yy), xx + 540, yy)
+
+    def share(s_last, r_last, g, xx, yy):
+        left = b.math("SUBTRACT", length, end_used(s_last, r_last, g, xx, yy), xx + 720, yy)
+        return b.math("DIVIDE", left, gaps, xx + 900, yy)
+
+    gap2 = b.math("ADD", gap, share(rout.outputs["S"], rout.outputs["R"], gap, x + 7400, y - 480), x + 8480, y - 480)
+
+    # --- проход 2: те же камни с подогнанным зазором, точки с размером и номером ---
+    def stone_point(s_val, size, idx, xx, yy):
+        pt = b.node("GeometryNodePoints", xx, yy)
+        geo = b.store(pt.outputs["Points"], ATTR_SPOS, "FLOAT", s_val, xx + 200, yy)
+        geo = b.store(geo, ATTR_SIZE, "FLOAT", size, xx + 400, yy)
+        return b.store(geo, ATTR_IDX, "FLOAT", idx, xx + 600, yy)
+
+    first = stone_point(0.0, size0, 0.0, x + 8600, y - 1400)
+    rin2, rout2 = repeat((("GEOMETRY", "Stones"), ("FLOAT", "S"), ("FLOAT", "R"), ("FLOAT", "I")), extra,
+                         x + 8800, y - 1100)
+    b.link(first, rin2.inputs["Stones"])
+    b.link(r0, rin2.inputs["R"])
+    s2, r2, size2 = next_stone(rin2.outputs["S"], rin2.outputs["R"], gap2, x + 9000, y - 1100)
+    i2 = b.math("ADD", rin2.outputs["I"], 1.0, x + 13800, y - 1300)
+    join = b.node("GeometryNodeJoinGeometry", x + 14200, y - 1100)
+    b.link(rin2.outputs["Stones"], join.inputs["Geometry"])
+    b.link(stone_point(s2, size2, i2, x + 13800, y - 1500), join.inputs["Geometry"])
+    b.link(join.outputs["Geometry"], rout2.inputs["Stones"])
+    b.link(s2, rout2.inputs["S"])
+    b.link(r2, rout2.inputs["R"])
+    b.link(i2, rout2.inputs["I"])
+
+    # --- остаток после второго прохода поровну на зазоры, точки на ряд ---
+    per = share(rout2.outputs["S"], rout2.outputs["R"], gap2, x + 14600, y - 800)
+    s_fin = b.math("ADD", b.named(ATTR_SPOS, "FLOAT", x + 15600, y - 1300),
+                   b.math("MULTIPLY", b.named(ATTR_IDX, "FLOAT", x + 15600, y - 1460), per, x + 15780, y - 1460),
+                   x + 15960, y - 1300)
+    on_row = sample(tilt, s_fin, x + 16140, y - 1300)
+    pts = b.store(rout2.outputs["Stones"], ATTR_TILT, "FLOAT", on_row.outputs["Value"], x + 16400, y - 1100)
+    place = b.node("GeometryNodeSetPosition", x + 16600, y - 1100)
+    b.link(pts, place.inputs["Geometry"])
+    b.link(on_row.outputs["Position"], place.inputs["Position"])
+    p2c = b.node("GeometryNodePointsToCurves", x + 16800, y - 1100)
+    b.link(place.outputs["Geometry"], p2c.inputs["Points"])
+    b.link(b.named(ATTR_IDX, "FLOAT", x + 16600, y - 1300), p2c.inputs["Weight"])
+    st = b.node("GeometryNodeSetCurveTilt", x + 17000, y - 1100)
+    b.link(p2c.outputs["Curves"], st.inputs["Curve"])
+    b.link(b.named(ATTR_TILT, "FLOAT", x + 16800, y - 1300), st.inputs["Tilt"])
+    cyc = b.node("GeometryNodeSetSplineCyclic", x + 17200, y - 1100)
+    b.link(st.outputs["Curve"], cyc.inputs["Geometry"])
+    b.link(b.cmp("GREATER_THAN", closed, 0.5, x + 17000, y - 1300), cyc.inputs["Cyclic"])
+    return cyc.outputs["Geometry"]
+
+
 def build_group():
     mirror = build_mirror()
     ng = bpy.data.node_groups.get(GROUP_NAME)
@@ -350,7 +508,14 @@ def build_group():
     factor = b.switch("FLOAT", has, 1.0, size.outputs["X"], 940, -500)
     stone = b.math("MULTIPLY", b.g("Gem Size"), factor, 1120, -500)
     pitch = b.math("ADD", stone, b.g("Spacing"), 1300, -500)
-    radius = b.math("MULTIPLY", stone, 0.5, 1300, -680)
+    # мелкий шаг реза: при Auto Size — по самому мелкому камню
+    min_stone = b.math("MULTIPLY", b.math("MINIMUM", b.g("Stone ø Min"), b.g("Stone ø Max"), 1120, -680), factor,
+                       1300, -680)
+    cut_pitch = b.switch("FLOAT", b.g("Auto Size"), pitch,
+                         b.math("ADD", min_stone, b.g("Spacing"), 1480, -680), 1660, -500)
+    # размер и половина длины камня — свои у каждой точки (атрибут _gc_size)
+    size_f = b.named(ATTR_SIZE, "FLOAT", 1120, -860)
+    radius = b.math("MULTIPLY", b.math("MULTIPLY", size_f, factor, 1300, -860), 0.5, 1480, -860)
 
     # --- Trim / Offset ---
     b.section("Trim")
@@ -382,7 +547,7 @@ def build_group():
     fine = b.node("GeometryNodeResampleCurve", 800, 200)
     fine.inputs["Mode"].default_value = "Length"
     b.link(trim.outputs["Curve"], fine.inputs["Curve"])
-    b.link(b.math("MULTIPLY", pitch, CUT_STEP, 800, -60), fine.inputs["Length"])
+    b.link(b.math("MULTIPLY", cut_pitch, CUT_STEP, 800, -60), fine.inputs["Length"])
     p = b.node("GeometryNodeInputPosition", 1000, -60).outputs[0]
     st = b.stat(fine.outputs["Curve"], p, "FLOAT_VECTOR", 1000, 200)
     sign = b.vmath("SIGN", b.enabled_out(st, "Mean"), None, 1200, 200)
@@ -413,11 +578,15 @@ def build_group():
     coarse.inputs["Mode"].default_value = "Count"
     b.link(row.outputs["Geometry"], coarse.inputs["Curve"])
     b.link(count, coarse.inputs["Count"])
+    fixed = b.store(coarse.outputs["Curve"], ATTR_SIZE, "FLOAT", b.g("Gem Size"), 3640, 400)
+    layout = b.frame
+    auto = auto_layout(b, row.outputs["Geometry"], factor, 2920, 2200)
+    b.frame = layout
+    laid = b.switch("GEOMETRY", b.g("Auto Size"), fixed, auto, 3840, 400)
     ctilt = b.node("GeometryNodeInputCurveTilt", 3640, -60)
     tilt = b.node("GeometryNodeSetCurveTilt", 3840, 200)
-    b.link(coarse.outputs["Curve"], tilt.inputs["Curve"])
+    b.link(laid, tilt.inputs["Curve"])
     b.link(b.math("ADD", b.g("Tilt"), ctilt.outputs[0], 3840, -60), tilt.inputs["Tilt"])
-    layout = b.frame
 
     # --- свободные концы ряда: касательная кривой вместо хорды к соседу ---
     b.section("Free Ends")
@@ -472,13 +641,14 @@ def build_group():
     pts = b.store(pts, ATTR_UP, "FLOAT_VECTOR", vz, 6000, 200)
     pts = b.store(pts, ATTR_ALONG, "FLOAT_VECTOR", b.named(ATTR_X, "FLOAT_VECTOR", 5800, -240), 6100, 200)
     pts = b.store(pts, ATTR_R, "FLOAT", radius, 6200, 200)
+    pts = b.store(pts, ATTR_GEM_SIZE, "FLOAT", size_f, 6300, 200)
     rot = b.node("FunctionNodeAxesToRotation", 6200, -60, primary_axis="Z", secondary_axis="X")
     b.link(vz, rot.inputs["Primary Axis"])
     b.link(b.named(ATTR_X, "FLOAT_VECTOR", 6000, -240), rot.inputs["Secondary Axis"])
     scale = b.node("ShaderNodeCombineXYZ", 6200, -240)
-    b.link(b.math("MULTIPLY", b.g("Gem Size"), b.named(ATTR_S, "FLOAT", 5800, -420), 6000, -420), scale.inputs["X"])
-    b.link(b.g("Gem Size"), scale.inputs["Y"])
-    b.link(b.g("Gem Size"), scale.inputs["Z"])
+    b.link(b.math("MULTIPLY", size_f, b.named(ATTR_S, "FLOAT", 5800, -420), 6000, -420), scale.inputs["X"])
+    b.link(size_f, scale.inputs["Y"])
+    b.link(size_f, scale.inputs["Z"])
     gem = b.node("GeometryNodeObjectInfo", 6200, -420, transform_space="ORIGINAL")
     gem.inputs["As Instance"].default_value = True
     b.link(b.g("Diam"), gem.inputs["Object"])

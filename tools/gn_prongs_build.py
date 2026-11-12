@@ -31,6 +31,16 @@ Prong Tilt: Z = Up * cos - side * sin, плюс — верхушки к камн
 
 Чтобы убрать одну сторону, поставьте ей Scale XY = 0.
 
+Scale by Stone: размеры крапана заданы для камня размером 1 и умножаются на размер камня
+(атрибут gem_size от My_Gems_Curve; нет атрибута — 1): Scale XY, Scale Z, Inner/Outer Offset,
+Z Offset. В зазоре — среднее двух соседних камней, на конце ряда — крайний камень.
+Max Gap и Start/End Offset — зазоры от края камня, не масштабируются.
+
+Along Offset (не 0): крапан в зазоре делится на два, сдвиг вдоль ряда (T) на -+Along Offset
+от середины зазора — каждому камню свой, по четыре крапана на камень. На конце ряда пара одна.
+С Scale by Stone разделённый крапан (и его Along Offset) — по своему камню, общий — по среднему.
+Inner/Outer Offset (вбок) у обоих — по среднему двух камней: крапана зазора стоят в одну линию.
+
 Realize: всё, что вышло из группы (камни и крапана), становится мешем, отражённым камням
 переворачиваются грани.
 
@@ -47,6 +57,7 @@ ATTR_UP = "gem_up"
 ATTR_ALONG = "gem_along"
 ATTR_R = "gem_r"
 ATTR_MIRROR = "gem_mirror"
+ATTR_SIZE = "gem_size"
 
 # (имя, тип, default, min, max, панель, subtype)
 SOCKETS = [
@@ -61,6 +72,8 @@ SOCKETS = [
     ("Scale Z", "NodeSocketFloat", 1.0, 0.0, None, "Prong", None),
     ("Z Offset", "NodeSocketFloat", 0.0, None, None, "Prong", None),
     ("Prong Tilt", "NodeSocketFloat", 0.0, None, None, "Prong", "ANGLE"),
+    ("Scale by Stone", "NodeSocketBool", False, None, None, "Prong", None),
+    ("Along Offset", "NodeSocketFloat", 0.0, None, None, "Prong", None),
     ("Max Gap", "NodeSocketFloat", 1.0, 0.0, None, "Row", None),
     ("Prong at Start", "NodeSocketBool", False, None, None, "Row", None),
     ("Start Offset", "NodeSocketFloat", 0.05, None, None, "Row", None),
@@ -260,6 +273,11 @@ def build_group():
 
     next_p = b.at_index(pos, next_i, "FLOAT_VECTOR", 1240, 200)
     next_u = b.at_index(up, next_i, "FLOAT_VECTOR", 1240, 40)
+    # размер камня: нет атрибута (старая группа камней) — 1
+    size_attr = b.named(ATTR_SIZE, "FLOAT", 1020, -1240)
+    size = b.switch("FLOAT", size_attr.outputs["Exists"], 1.0, size_attr.outputs["Attribute"], 1240, -1240)
+    next_s = b.at_index(size, next_i, "FLOAT", 1460, -1240)
+    prev_s = b.at_index(size, prev_i, "FLOAT", 1460, -1400)
     next_r = b.at_index(rad, next_i, "FLOAT", 1240, -120)
     prev_p = b.at_index(pos, prev_i, "FLOAT_VECTOR", 1240, -280)
     prev_u = b.at_index(up, prev_i, "FLOAT_VECTOR", 1240, -440)
@@ -284,6 +302,7 @@ def build_group():
         "Next OK": ("BOOLEAN", next_ok),
         "Prev P": ("VECTOR", prev_p), "Prev Up": ("VECTOR", prev_u), "Prev R": ("FLOAT", prev_r),
         "Prev OK": ("BOOLEAN", prev_ok),
+        "Next S": ("FLOAT", next_s), "Prev S": ("FLOAT", prev_s),
     }, 2420, 200)
 
     # --- заготовки вперёд и назад ---
@@ -326,11 +345,15 @@ def build_group():
 
     both = b.vmath("NORMALIZE", b.vmath("ADD", up, nb_u, 4040, -340), None, 4220, -340)
     site_up = b.switch("VECTOR", ok, up, both, 4400, -340)
+    # размеры камней по ходу T: сзади — этот камень, спереди — сосед (на конце ряда — тот же)
+    nb_s = b.switch("FLOAT", back, cap.outputs["Next S"], cap.outputs["Prev S"], 4040, -1240)
+    front_s = b.switch("FLOAT", ok, size, nb_s, 4220, -1240)
     travel = b.switch("VECTOR", back, dirv, b.vmath("SCALE", dirv, -1.0, 4220, -520), 4400, -520)
     across = b.vmath("NORMALIZE", b.vmath("CROSS_PRODUCT", site_up, travel, 4580, -520), None, 4760, -520)
 
     sites = b.capture(cut.outputs["Geometry"], {
         "Site": ("VECTOR", site), "Up": ("VECTOR", site_up), "T": ("VECTOR", travel), "Across": ("VECTOR", across),
+        "Pair": ("BOOLEAN", ok), "S Back": ("FLOAT", size), "S Front": ("FLOAT", front_s),
     }, 4960, 200)
 
     # --- какая сторона наружу ---
@@ -341,19 +364,46 @@ def build_group():
     mean = b.stat(sites.outputs["Geometry"], probe, "FLOAT", 5800, 200)
     outward = b.switch("FLOAT", b.cmp("GREATER_EQUAL", mean, 0.0, 6000, 200), -1.0, 1.0, 6180, 200)
 
+    # --- Along Offset: крапан в зазоре делится на два, каждому камню свой ---
+    b.section("Along Split")
+    s_back, s_front = sites.outputs["S Back"], sites.outputs["S Front"]
+    split = b.boolean("AND", sites.outputs["Pair"],
+                      b.cmp("NOT_EQUAL", b.g("Along Offset"), 0.0, 6200, -640), 6380, -640)
+    dup_a = b.node("GeometryNodeDuplicateElements", 6440, 200, domain="POINT")
+    b.link(sites.outputs["Geometry"], dup_a.inputs["Geometry"])
+    b.link(b.switch("INT", split, 1, 2, 6440, -640), dup_a.inputs["Amount"])
+    front = b.cmp("GREATER_THAN", dup_a.outputs["Duplicate Index"], 0.5, 6620, -460)
+    shift = b.switch("FLOAT", split, 0.0, b.switch("FLOAT", front, -1.0, 1.0, 6800, -460), 6980, -460)
+    # Scale by Stone: разделённый — по своему камню, общий — среднее двух
+    own_s = b.switch("FLOAT", front, s_back, s_front, 6800, -820)
+    mean_s = b.math("MULTIPLY", b.math("ADD", s_back, s_front, 6800, -1000), 0.5, 6980, -1000)
+    k = b.switch("FLOAT", b.g("Scale by Stone"), 1.0,
+                 b.switch("FLOAT", split, mean_s, own_s, 7160, -820), 7340, -820)
+    step = b.math("MULTIPLY", b.math("MULTIPLY", shift, b.g("Along Offset"), 7160, -460), k, 7340, -460)
+    site = b.vmath("ADD", sites.outputs["Site"], b.vmath("SCALE", sites.outputs["T"], step, 7520, -460), 7700, -460)
+    # отступ вбок — по среднему двух камней: крапана зазора стоят в одну линию
+    k_side = b.switch("FLOAT", b.g("Scale by Stone"), 1.0, mean_s, 7340, -1000)
+    along_cap = b.capture(dup_a.outputs["Geometry"], {
+        "Site": ("VECTOR", site), "K": ("FLOAT", k), "K Side": ("FLOAT", k_side),
+    }, 7900, 200)
+
     # --- крапана: внутрь и наружу ---
     b.section("Prongs")
-    dup2 = b.node("GeometryNodeDuplicateElements", 6440, 200, domain="POINT")
-    b.link(sites.outputs["Geometry"], dup2.inputs["Geometry"])
+    dup2 = b.node("GeometryNodeDuplicateElements", 8140, 200, domain="POINT")
+    b.link(along_cap.outputs["Geometry"], dup2.inputs["Geometry"])
     dup2.inputs["Amount"].default_value = 2
     inner = b.cmp("GREATER_THAN", dup2.outputs["Duplicate Index"], 0.5, 6440, -60)
-    offset = b.switch("FLOAT", inner, b.g("Outer Offset"), b.g("Inner Offset"), 6660, -60)
-    scale_xy = b.switch("FLOAT", inner, b.g("Outer Scale XY"), b.g("Inner Scale XY"), 6660, -240)
+    k = along_cap.outputs["K"]
+    offset = b.math("MULTIPLY", b.switch("FLOAT", inner, b.g("Outer Offset"), b.g("Inner Offset"), 6660, -60),
+                    along_cap.outputs["K Side"], 6840, -60)
+    scale_xy = b.math("MULTIPLY", b.switch("FLOAT", inner, b.g("Outer Scale XY"), b.g("Inner Scale XY"), 6660, -240),
+                      k, 6840, -240)
     sign = b.switch("FLOAT", inner, outward, b.math("MULTIPLY", outward, -1.0, 6660, -420), 6840, -420)
     side = b.vmath("SCALE", sites.outputs["Across"], sign, 7020, -420)
 
-    moved = b.vmath("ADD", sites.outputs["Site"], b.vmath("SCALE", side, offset, 7020, -60), 7200, -60)
-    lifted = b.vmath("ADD", moved, b.vmath("SCALE", sites.outputs["Up"], b.g("Z Offset"), 7200, -240), 7380, -60)
+    moved = b.vmath("ADD", along_cap.outputs["Site"], b.vmath("SCALE", side, offset, 7020, -60), 7200, -60)
+    lifted = b.vmath("ADD", moved, b.vmath("SCALE", sites.outputs["Up"],
+                                           b.math("MULTIPLY", b.g("Z Offset"), k, 7020, -240), 7200, -240), 7380, -60)
     place = b.node("GeometryNodeSetPosition", 7580, 200)
     b.link(dup2.outputs["Geometry"], place.inputs["Geometry"])
     b.link(lifted, place.inputs["Position"])
@@ -371,7 +421,7 @@ def build_group():
     scale = b.node("ShaderNodeCombineXYZ", 7740, -640)
     b.link(scale_xy, scale.inputs["X"])
     b.link(scale_xy, scale.inputs["Y"])
-    b.link(b.g("Scale Z"), scale.inputs["Z"])
+    b.link(b.math("MULTIPLY", b.g("Scale Z"), k, 7560, -640), scale.inputs["Z"])
 
     # один меш на все крапана: материал на меш, инстансы ссылаются на него
     info = b.node("GeometryNodeObjectInfo", 7200, -820, transform_space="ORIGINAL")
