@@ -111,6 +111,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `lib/asset.py` `iter_gems`, ищет `"gem"` у исходного объекта) камни не видит. Атрибуты чистить
   на точках до инстансов; Merge by Distance — только по мешу (Separate Components), как в
   `z180_merge_mesh_only_patch.py` (корень, локально). Transform Geometry ссылку не ломает.
+  Так же ломают (замерено): Set Material на камне, Delete Geometry (внутри `LB_Switch Geometry` —
+  для камня обычный Switch), модификатор `Smooth by Angle` после GN с камнями (Set Shade Smooth).
+  Realize Instances — только на металл, камень присоединять после.
 - **Смена `md.node_group`** на модификаторе (даже на копию группы и обратно) сбрасывает часть
   входов. Сверять «до/после» на копии объекта, не на рабочих модификаторах.
 - **Menu Switch при пересборке** (`nodes.clear()` + новый узел) даёт пунктам меню новые внутренние
