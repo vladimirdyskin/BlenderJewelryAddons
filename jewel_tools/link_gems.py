@@ -45,7 +45,9 @@ def _mesh_signature(mesh: bpy.types.Mesh) -> str:
     extent = [maximum[axis] - minimum[axis] for axis in range(3)]
     normalized = [
         tuple(
-            round((coordinate[axis] - minimum[axis]) / extent[axis], 6)
+            # от origin, не от угла рамки: иначе меши со смещённым origin
+            # попадают в одну группу и камень после связки съезжает
+            round(coordinate[axis] / extent[axis], 6)
             if extent[axis] > 1e-12
             else 0.0
             for axis in range(3)
@@ -132,6 +134,12 @@ def _modifier_signature(obj: bpy.types.Object) -> tuple[object, ...]:
     return tuple(signature)
 
 
+def _base_name(name: str) -> str:
+    # "Smooth by Angle.001" -> "Smooth by Angle" (копия группы при добавлении ассета)
+    stem, dot, suffix = name.rpartition(".")
+    return stem if dot and suffix.isdigit() else name
+
+
 def _is_safe_prong_candidate(obj: bpy.types.Object) -> bool:
     return (
         obj.type == "MESH"
@@ -146,7 +154,7 @@ def _is_safe_prong_candidate(obj: bpy.types.Object) -> bool:
         and all(
             modifier.type == "NODES"
             and modifier.node_group is not None
-            and modifier.node_group.name == "Smooth by Angle"
+            and _base_name(modifier.node_group.name) == "Smooth by Angle"
             for modifier in obj.modifiers
         )
     )
