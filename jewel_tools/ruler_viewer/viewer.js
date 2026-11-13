@@ -8,9 +8,9 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { DimensionOverlay } from './overlay2d.js?v=17';  // keep in step with VIEWER_VERSION
+import { DimensionOverlay } from './overlay2d.js?v=18';  // keep in step with VIEWER_VERSION
 
-const VIEWER_VERSION = 17; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 18; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
 const CAVITY_RADIUS_PX = 1.5; // sample offset in CSS px (scaled by DPR via the buffer size)
@@ -210,21 +210,38 @@ function setLimits(s) {
   }
 }
 
+// Model plus the dimension points: their lines and labels sit around the model and must stay on screen too.
+function framingSphere() {
+  if (!state.root) return null;
+  const box = new THREE.Box3().setFromObject(state.root);
+  const p = new THREE.Vector3();
+  for (const d of state.dims?.dimensions || []) {
+    if (d.enabled === false) continue;
+    for (const pt of d.points) box.expandByPoint(p.fromArray(pt));
+  }
+  return box.getBoundingSphere(new THREE.Sphere());
+}
+
+// Frame everything on the current screen, keeping the current viewing direction and projection.
+const FIT_PAD_PX = 56;
 function fit() {
-  const s = modelSphere();
+  const s = framingSphere();
   if (!s || s.radius === 0) return;
   const r = s.radius * 1.1;
   const dir = camera.position.clone().sub(controls.target).normalize();
   if (dir.lengthSq() === 0) dir.set(0.6, 0.5, 0.7).normalize();
-  const aspect = stage.clientWidth / Math.max(1, stage.clientHeight);
+  const w = Math.max(1, stage.clientWidth), h = Math.max(1, stage.clientHeight);
+  const aspect = w / h;
+  // usable share of each side: leaders of small dimensions and labels stick out by screen pixels
+  const fx = Math.max(0.3, 1 - 2 * FIT_PAD_PX / w), fy = Math.max(0.3, 1 - 2 * FIT_PAD_PX / h);
   controls.target.copy(s.center);
   if (camera.isPerspectiveCamera) {
-    const fovV = THREE.MathUtils.degToRad(perspCam.fov);
-    const fovH = 2 * Math.atan(Math.tan(fovV / 2) * aspect);
-    const dist = r / Math.sin(Math.min(fovV, fovH) / 2);
+    const tanV = Math.tan(THREE.MathUtils.degToRad(perspCam.fov) / 2);
+    const half = Math.atan(Math.min(tanV * fy, tanV * aspect * fx));
+    const dist = r / Math.sin(half);
     camera.position.copy(s.center).addScaledVector(dir, dist);
   } else {
-    orthoHalfH = r * Math.max(1, 1 / aspect);
+    orthoHalfH = r / Math.min(fy, aspect * fx);
     orthoCam.zoom = 1;
     updateOrthoFrustum();
     camera.position.copy(s.center).addScaledVector(dir, r * 4);
@@ -235,6 +252,9 @@ function fit() {
 
 function applyView(v) {
   const cam = v.perspective ? perspCam : orthoCam;
+  // views published before the ortho fix put the camera on the orbit center: the direction is lost
+  // (float noise of the matrix inversion: ~1e-6 there, tens of mm in a real view)
+  const lost = Math.hypot(...v.position.map((x, i) => x - v.target[i])) < (v.viewDistance || 1) * 1e-3;
   // Keep world up: OrbitControls orbits around camera.up, and Blender's turntable
   // view has no roll, so position + target alone reproduce it.
   cam.up.set(0, 1, 0);
@@ -255,6 +275,7 @@ function applyView(v) {
     updateOrthoFrustum();
   }
   setCamera(cam);
+  if (lost) fit();
 }
 
 function setCamera(cam) {
@@ -432,7 +453,10 @@ async function applyManifest(m) {
   const wasFirst = state.first;
   if (state.first && state.root) {
     state.first = false;
-    if (state.dims && state.dims.view) applyView(state.dims.view); else fit();
+    // the author's angle, framed for this screen (a phone shows far less width than Blender's viewport);
+    // "Blender view" gives the exact viewport
+    if (state.dims && state.dims.view) applyView(state.dims.view);
+    fit();
   }
   const failed = results.find((r) => r.status === 'rejected');
   if (failed) throw failed.reason;

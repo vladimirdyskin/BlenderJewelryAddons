@@ -524,7 +524,9 @@ def _collect_view():
     space = found[3]
     rv3d = space.region_3d
     lens = space.lens
-    position = rv3d.view_matrix.inverted().translation
+    # not view_matrix.inverted().translation: Blender offsets the view matrix by view_distance only in
+    # perspective (view3d_view.cc), so in ortho that point is the orbit center itself
+    position = rv3d.view_location + rv3d.view_rotation @ Vector((0.0, 0.0, rv3d.view_distance))
     up = rv3d.view_rotation @ Vector((0.0, 1.0, 0.0))
     return {
         "position": to_gltf(position),
