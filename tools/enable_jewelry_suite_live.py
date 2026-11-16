@@ -20,6 +20,8 @@ SUITE_SUBMODULES = (
     "pave_live",
     "surface_pave",
     "metal_union",
+    "param_gem",
+    "prong_points",
     "ui_panel",
     "pretty_ruler",
     "ruler_publish",
@@ -35,6 +37,38 @@ LEGACY_MODULES = (
 def disable_addon(module_name: str) -> None:
     if module_name in bpy.context.preferences.addons:
         bpy.ops.preferences.addon_disable(module=module_name)
+
+
+def addon_preferences(module_name: str):
+    addon = bpy.context.preferences.addons.get(module_name)
+    return addon.preferences if addon is not None else None
+
+
+def snapshot_preferences(module_name: str) -> dict:
+    # addon_disable removes the add-on entry from the user preferences together with its values
+    # (login, password, Upload to Server...), so they are copied here and put back after addon_enable
+    prefs = addon_preferences(module_name)
+    if prefs is None:
+        return {}
+    values = {}
+    for prop in prefs.bl_rna.properties:
+        name = prop.identifier
+        if name in {"rna_type", "bl_idname"} or prop.type in {"POINTER", "COLLECTION"}:
+            continue
+        if prop.is_readonly or not prefs.is_property_set(name):
+            continue
+        value = getattr(prefs, name)
+        values[name] = value[:] if getattr(prop, "is_array", False) else value
+    return values
+
+
+def restore_preferences(module_name: str, values: dict) -> None:
+    prefs = addon_preferences(module_name)
+    if prefs is None:
+        return
+    for name, value in values.items():
+        if name in prefs.bl_rna.properties:
+            setattr(prefs, name, value)
 
 
 def cleanup_partial_surface_pave() -> None:
@@ -62,6 +96,7 @@ enabled_legacy = [
     if module_name in bpy.context.preferences.addons
 ]
 suite_was_enabled = SUITE_MODULE in bpy.context.preferences.addons
+suite_preferences = snapshot_preferences(SUITE_MODULE)
 
 for module_name in enabled_legacy:
     disable_addon(module_name)
@@ -92,6 +127,7 @@ except Exception:
     bpy.ops.wm.save_userpref()
     raise
 
+restore_preferences(SUITE_MODULE, suite_preferences)
 bpy.ops.wm.save_userpref()
 
 result = {

@@ -86,6 +86,10 @@ class VIEW3D_PT_jewel_tools(bpy.types.Panel):
         operator.scope = 'ALL'
 
         box = L.box()
+        box.label(text="Stone Setting", icon='VERTEXSEL')
+        box.operator("object.prong_points_to_mesh", text="Prong Points to Mesh", icon='VERTEXSEL')
+
+        box = L.box()
         box.label(text="Metal for STL", icon='MESH_DATA')
         box.operator("object.metal_union", text="Build Metal Mesh", icon='MOD_BOOLEAN')
 
