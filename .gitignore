@@ -8,6 +8,9 @@
 !/CLAUDE.md
 !/LICENSE.md
 !/.gitignore
+!/.claude/
+/.claude/*
+!/.claude/skills/
 
 **/__pycache__/
 **/*.py[cod]
