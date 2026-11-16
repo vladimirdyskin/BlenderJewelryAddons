@@ -8,9 +8,9 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { DimensionOverlay } from './overlay2d.js?v=18';  // keep in step with VIEWER_VERSION
+import { DimensionOverlay } from './overlay2d.js?v=19';  // keep in step with VIEWER_VERSION
 
-const VIEWER_VERSION = 18; // keep in sync with the first-line comment of index.html
+const VIEWER_VERSION = 19; // keep in sync with the first-line comment of index.html
 const POLL_MS = 3000;
 const MAX_BACKOFF_MS = 30000;
 const CAVITY_RADIUS_PX = 1.5; // sample offset in CSS px (scaled by DPR via the buffer size)
@@ -330,7 +330,9 @@ function rebuildNormals(root) {
         g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
         g.computeVertexNormals();
       } else {
-        g = toCreasedNormals(o.geometry, CREASE_ANGLE);
+        // pr_crease: the publisher's angle for a mesh whose smooth edges are wider than the default
+        const crease = o.userData.pr_crease;
+        g = toCreasedNormals(o.geometry, crease ? THREE.MathUtils.degToRad(crease) : CREASE_ANGLE);
       }
       done.set(o.geometry, g);
     }

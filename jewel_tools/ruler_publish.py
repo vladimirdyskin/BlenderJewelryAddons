@@ -27,6 +27,7 @@ import urllib.request
 import zipfile
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 DEFAULT_HOST = "https://preview.dyskin.net"
@@ -336,6 +337,8 @@ def _remove_temp_decimate(objs):
 
 
 FLAT_PROP = "pr_flat"
+CREASE_PROP = "pr_crease"
+VIEWER_CREASE = 35.0  # degrees, CREASE_ANGLE of viewer.js: what a mesh without a tag is shaded with
 
 
 def _is_faceted(me):
@@ -356,42 +359,87 @@ def _is_faceted(me):
     return False
 
 
-def _faceted_mesh_names():
-    """Names of the mesh datablocks whose evaluated geometry is faceted (incl. Geometry Nodes
-    instance sources). glTF meshes keep the datablock name, so the GLB can be tagged by name."""
+def _crease_angle(me):
+    """Degrees for the viewer to crease this evaluated mesh at, when its default angle would break
+    edges that are smooth here (a tube with 8 sides shaded smooth has 45 degrees between faces):
+    halfway between the widest smooth edge and the narrowest sharp one. None when the default fits."""
+    n_faces, n_edges = len(me.polygons), len(me.edges)
+    if not n_faces:
+        return None
+    edge_of_corner = np.empty(len(me.loops), dtype=np.int32)
+    me.loops.foreach_get("edge_index", edge_of_corner)
+    corners = np.empty(n_faces, dtype=np.int32)
+    me.polygons.foreach_get("loop_total", corners)
+    normals = np.empty(n_faces * 3, dtype=np.float32)
+    me.polygons.foreach_get("normal", normals)
+    normals.shape = (n_faces, 3)
+    # corners sorted by edge: an edge between two faces owns two neighbours in that order
+    order = np.argsort(edge_of_corner, kind="stable")
+    face_of_corner = np.repeat(np.arange(n_faces), corners)[order]
+    two = np.bincount(edge_of_corner, minlength=n_edges) == 2
+    first = np.searchsorted(edge_of_corner[order], np.arange(n_edges))[two]
+    a, b = face_of_corner[first], face_of_corner[first + 1]
+    angle = np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", normals[a], normals[b]), -1.0, 1.0)))
+    sharp_face = np.zeros(n_faces, dtype=bool)
+    if me.attributes.get("sharp_face") is not None:
+        me.attributes["sharp_face"].data.foreach_get("value", sharp_face)
+    sharp = np.zeros(n_edges, dtype=bool)
+    if me.attributes.get("sharp_edge") is not None:
+        me.attributes["sharp_edge"].data.foreach_get("value", sharp)
+    sharp = sharp[two] | sharp_face[a] | sharp_face[b]
+    smooth = angle[~sharp]
+    if not smooth.size or smooth.max() <= VIEWER_CREASE:
+        return None
+    widest = float(smooth.max())
+    narrowest = float(angle[sharp].min()) if sharp.any() else 180.0
+    # sharp edges narrower than a smooth one cannot be told apart by angle: the smooth ones win
+    return round((widest + (narrowest if narrowest > widest else widest + 2.0)) / 2.0, 1)
+
+
+def _mesh_tags():
+    """{evaluated mesh name: FLAT_PROP or a crease angle in degrees} for the meshes the viewer must
+    not shade with its default crease angle, Geometry Nodes instances included (a stone painted
+    inside a node tree is a mesh copy owned by its instancer, not by the gem object).
+    glTF meshes keep the evaluated mesh name, so the GLB can be tagged by name; a name whose meshes
+    disagree is left out (Geometry Nodes output is always "Mesh")."""
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    names = set()
+    tags = {}
     seen = set()
     for inst in depsgraph.object_instances:
         obj = inst.object
-        if obj.type != 'MESH' or obj.original.data is None:
+        if obj.type != 'MESH' or obj.data is None:
             continue
-        name = obj.original.data.name
-        if name in seen:
+        pointer = obj.data.as_pointer()  # copies of one instance share the evaluated mesh
+        if pointer in seen:
             continue
-        seen.add(name)
+        seen.add(pointer)
         me = obj.to_mesh()
         try:
-            if _is_faceted(me):
-                names.add(name)
+            tag = FLAT_PROP if _is_faceted(me) else _crease_angle(me)
         finally:
             obj.to_mesh_clear()
-    return names
+        if tags.setdefault(obj.data.name, tag) != tag:
+            tags[obj.data.name] = None
+    return {name: tag for name, tag in tags.items() if tag is not None}
 
 
-def _tag_flat_meshes(glb_path, names):
-    """Write `extras.pr_flat = 1` into the GLB's JSON chunk for meshes with those names; the viewer
-    then rebuilds per-face normals for them. The exporter itself drops mesh extras for evaluated
-    and instanced meshes, hence the post-processing."""
-    if not names:
+def _tag_meshes(glb_path, tags):
+    """Write `extras.pr_flat = 1` or `extras.pr_crease = <degrees>` into the GLB's JSON chunk for the
+    meshes named in `tags`; the viewer then rebuilds per-face normals, or normals creased at that
+    angle. The exporter itself drops mesh extras for evaluated and instanced meshes, hence the
+    post-processing."""
+    if not tags:
         return
     with open(glb_path, "rb") as f:
         data = f.read()
     json_len, = struct.unpack_from("<I", data, 12)
     gltf = json.loads(data[20:20 + json_len])
     for mesh in gltf.get("meshes", []):
-        if mesh.get("name") in names:
+        tag = tags.get(mesh.get("name"))
+        if tag == FLAT_PROP:
             mesh.setdefault("extras", {})[FLAT_PROP] = 1
+        elif tag is not None:
+            mesh.setdefault("extras", {})[CREASE_PROP] = tag
     body = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
     body += b" " * (-len(body) % 4)
     rest = data[20 + json_len:]
@@ -404,7 +452,7 @@ def _export_glb(scene, path):
     # the exporter appends ".glb" when missing, so the temp name keeps the extension
     tmp = os.path.join(os.path.dirname(path), "scene.tmp.glb")
     touched, tris = _decimate_for_budget(scene, get_max_triangles())
-    flat_names = _faceted_mesh_names()
+    tags = _mesh_tags()
     try:
         result = bpy.ops.export_scene.gltf(
             filepath=tmp,
@@ -434,7 +482,7 @@ def _export_glb(scene, path):
         _remove_temp_decimate(touched)
     if 'FINISHED' not in result or not os.path.isfile(tmp):
         raise RuntimeError("glTF export failed: %s" % result)
-    _tag_flat_meshes(tmp, flat_names)
+    _tag_meshes(tmp, tags)
     os.replace(tmp, path)
     return tris
 
