@@ -111,7 +111,9 @@ ORDER = (STONE, PRONGS, CAST, BOOL)
 CUTS = ["Round", "Emerald", "Oval", "Pear",
         # этап 2 — в порядке parametric_gems, только дописываются в конец
         "Cushion", "Marquise", "Princess", "Baguette", "Square", "Asscher", "Radiant", "Flanders", "Octagon",
-        "Heart", "Trillion", "Trilliant", "Triangle"]
+        "Heart", "Trillion", "Trilliant", "Triangle",
+        # своя огранка без шаблона parametric_gems: камень и контур строит taper_objects
+        "Taper"]
 # места крапанов по умолчанию для всех огранок (Outline <Cut>), в настоящих пропорциях камня
 # base_width x base_length: diag — 4 точки предела к диагоналям габарита; corners — острые вершины;
 # cuts — середины 4 кратчайших пролётов угол-угол; tips — 3 дальних острых вершины не ближе 60°;
@@ -121,7 +123,16 @@ RULES = {"ROUND": ("diag",), "OVAL": ("diag",), "CUSHION": ("diag",),
          "PEAR": ("even", 5, (0, 2, 3)), "MARQUISE": ("even", 6), "HEART": ("even", 5),
          "PRINCESS": ("corners",), "BAGUETTE": ("corners",), "SQUARE": ("corners",),
          "TRILLION": ("tips", 3), "TRIANGLE": ("tips", 3), "TRILLIANT": ("tips", 3),
-         "EMERALD": ("cuts",), "ASSCHER": ("cuts",), "RADIANT": ("cuts",), "FLANDERS": ("cuts",), "OCTAGON": ("cuts",)}
+         "EMERALD": ("cuts",), "ASSCHER": ("cuts",), "RADIANT": ("cuts",), "FLANDERS": ("cuts",), "OCTAGON": ("cuts",),
+         "TAPER": ("corners",)}
+# Taper — трапеция ступенчатой огранки: основания вдоль Y (длинное на x = -W/2, короткое на x = +W/2),
+# TAPER_RATIO — короткое основание / длинное; пропорции ширина : длина — TAPER_SIZE (как камень Taper Владимира)
+TAPER_RATIO = 0.735
+TAPER_SIZE = (0.6, 1.0)
+# доли ширины: рундист, корона, павильон; ступени (доля высоты, отступ внутрь в долях полуширины)
+TAPER_GIRDLE, TAPER_CROWN, TAPER_PAVILION = 0.04, 0.20, 0.444
+TAPER_TABLE = 0.38
+TAPER_STEPS = ((0.41, 0.30), (0.77, 0.64))
 NO_OUTLINE = ("ROUND", "EMERALD")   # свои ветки без контура (Outline пуст) — как были
 SITE_STEPS = 64                     # точек предела на пролёт петли при выборе мест
 EPS = 1e-4          # отбор вершин рундиста камня-единицы (|x| или |y| у края габарита)
@@ -774,9 +785,83 @@ def menu_switch(b, sock, items, x, y):
 
 # --- My_Stone ----------------------------------------------------------------------------------
 
+def taper_ring(ratio, d):
+    """Трапеция TAPER_SIZE, сдвинутая внутрь на d (параллельно каждой стороне): 4 угла против часовой."""
+    w, ln = TAPER_SIZE
+    a, c = ln / 2.0, ln * ratio / 2.0
+    pts = [(w / 2, -c), (w / 2, c), (-w / 2, a), (-w / 2, -a)]
+    lines = []
+    for i in range(4):
+        (x0, y0), (x1, y1) = pts[i], pts[(i + 1) % 4]
+        dx, dy = x1 - x0, y1 - y0
+        k = (dx * dx + dy * dy) ** 0.5
+        nx, ny = -dy / k, dx / k                    # внутрь (обход против часовой)
+        lines.append((nx, ny, nx * x0 + ny * y0 + d))
+    out = []
+    for i in range(4):                              # угол i — пересечение сторон i - 1 и i
+        (a1, b1, c1), (a2, b2, c2) = lines[i - 1], lines[i]
+        det = a1 * b2 - a2 * b1
+        out.append(((c1 * b2 - c2 * b1) / det, (a1 * c2 - a2 * c1) / det))
+    return out
+
+
+def taper_geometry(ratio):
+    """Камень-единица Taper: вершины (габарит XY 1 x 1, z в долях ширины, низ рундиста на z = 0) и грани.
+    Все грани плоские: каждая — между двумя параллельными отрезками соседних ступеней."""
+    w, ln = TAPER_SIZE
+    half = w / 2.0
+    levels = [(TAPER_GIRDLE + TAPER_CROWN, TAPER_TABLE * half), (TAPER_GIRDLE, 0.0), (0.0, 0.0)]
+    levels += [(-t * TAPER_PAVILION, s * half) for t, s in TAPER_STEPS]
+    verts = [(x / w, y / ln, z) for z, d in levels for x, y in taper_ring(ratio, d)]
+    keel = taper_ring(ratio, half)
+    k = len(verts)
+    verts += [(0.0, keel[0][1] / ln, -TAPER_PAVILION), (0.0, keel[1][1] / ln, -TAPER_PAVILION)]
+    faces = [(0, 1, 2, 3)]
+    n = len(levels)
+    for r in range(n - 1):
+        for i in range(4):
+            j = (i + 1) % 4
+            faces.append((4 * r + i, 4 * (r + 1) + i, 4 * (r + 1) + j, 4 * r + j))
+    b = 4 * (n - 1)                                  # нижняя ступень -> киль (k — у y < 0, k + 1 — у y > 0)
+    faces += [(b + 0, k, k + 1, b + 1), (b + 1, k + 1, b + 2), (b + 2, k + 1, k, b + 3), (b + 3, k, b + 0)]
+    return verts, faces
+
+
+def taper_objects(ratio=None):
+    """Камень-единица и контур Taper: 'Unit Taper' / 'Outline Taper' с TAPER_RATIO; ratio задан — пара
+    'Unit Taper 60' / 'Outline Taper 60' (проценты) для входов Diam и Outline. Уже есть — не трогать.
+    Метка gem — BAGUETTE: огранки Taper у JewelCraft нет."""
+    gc = mods()[2]
+    tag = "Taper" if ratio is None else "Taper %d" % round(ratio * 100)
+    ratio = TAPER_RATIO if ratio is None else ratio
+    stone = bpy.data.objects.get("Unit " + tag)
+    if stone is None:
+        verts, faces = taper_geometry(ratio)
+        mesh = bpy.data.meshes.new("Unit " + tag)
+        mesh.from_pydata(verts, [], faces)
+        mesh.update()
+        stone = bpy.data.objects.new("Unit " + tag, mesh)
+        stone["gem"] = {"cut": "BAGUETTE", "stone": "DIAMOND"}
+        gc.utils_collection().objects.link(stone)
+    outline = bpy.data.objects.get("Outline " + tag)
+    if outline is None:
+        w, ln = TAPER_SIZE
+        loop = [(x / w, y / ln, 0.0) for x, y in taper_ring(ratio, 0.0)]
+        mesh = bpy.data.meshes.new("Outline " + tag)
+        mesh.from_pydata(loop + loop, [(i, (i + 1) % 4) for i in range(4)], [])     # петля + места в углах
+        corner = mesh.attributes.new("corner", "FLOAT", "POINT")
+        corner.data.foreach_set("value", [1.0] * 4 + [0.0] * 4)
+        mesh.update()
+        outline = bpy.data.objects.new("Outline " + tag, mesh)
+        gc.utils_collection().objects.link(outline)
+    return stone, outline
+
+
 def builtin_stone(cut):
     """Встроенный камень-единица огранки. Round — RWPRound, если он есть в файле, иначе unit_stone."""
     gc = mods()[2]
+    if cut == "TAPER":
+        return taper_objects()[0]
     return (bpy.data.objects.get("RWPRound") if cut == "ROUND" else None) or gc.unit_stone(cut)
 
 
@@ -833,6 +918,8 @@ def builtin_outline(cut, force=False):
     (нужен, когда места крапанов заданы своим мешем объекта)."""
     if cut in NO_OUTLINE and not force:
         return None
+    if cut == "TAPER":
+        return taper_objects()[1]
     gc = mods()[2]
     name = "Outline %s" % cut.title()
     obj = bpy.data.objects.get(name)
@@ -2167,7 +2254,7 @@ def setup(cut, width=None, length=None, diam=None, cutter=None, name=None, cast_
     if STONE in new:
         put(STONE, (None, "Cut"), cut)
         if diam is None:
-            diam = gc.unit_stone(cut.upper())
+            diam = taper_objects()[0] if cut == "Taper" else gc.unit_stone(cut.upper())
         if cut == "Emerald" and width is not None and length is None:
             spec = gc.load_module("gem_cast_gems", gc.GEMS_PATH)._CUT_SPECS["EMERALD"]
             length = width * spec.base_length / spec.base_width
